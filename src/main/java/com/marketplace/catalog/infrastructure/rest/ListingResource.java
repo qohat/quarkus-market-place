@@ -5,6 +5,10 @@ import com.marketplace.catalog.domain.Listing;
 import com.marketplace.catalog.domain.ListingId;
 import com.marketplace.shared.domain.Money;
 import com.marketplace.shared.domain.SellerId;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.Positive;
 import jakarta.ws.rs.BadRequestException;
 import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.DefaultValue;
@@ -50,6 +54,10 @@ import java.util.List;
 @Produces(MediaType.APPLICATION_JSON)
 public class ListingResource {
 
+    /** Formato de UUID, para validar identificadores antes de intentar parsearlos. */
+    private static final String UUID_PATTERN =
+            "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
+
     private final ListingCatalog catalog;
 
     /**
@@ -83,16 +91,30 @@ public class ListingResource {
 
     @GET
     @Path("{id}")
-    public ListingResponse byId(@PathParam("id") String id) {
+    public ListingResponse byId(
+            @PathParam("id")
+            @Pattern(regexp = UUID_PATTERN, message = "id must be a UUID")
+            String id) {
+
         return ListingResponse.from(catalog.byId(parseListingId(id)));
     }
 
-    /** Disponibilidad para una cantidad concreta. Por defecto, una unidad. */
+    /**
+     * Disponibilidad para una cantidad concreta. Por defecto, una unidad.
+     *
+     * <p>{@code @Positive} sobre el parámetro de consulta sustituye a la comprobación manual: una
+     * cantidad de cero o negativa se rechaza con 400 antes de que el dominio llegue a verla.
+     */
     @GET
     @Path("{id}/availability")
     public AvailabilityResponse availability(
-            @PathParam("id") String id,
-            @QueryParam("quantity") @DefaultValue("1") int quantity) {
+            @PathParam("id")
+            @Pattern(regexp = UUID_PATTERN, message = "id must be a UUID")
+            String id,
+
+            @QueryParam("quantity") @DefaultValue("1")
+            @Positive(message = "quantity must be greater than zero")
+            int quantity) {
 
         return AvailabilityResponse.from(catalog.checkAvailability(parseListingId(id), quantity));
     }
@@ -114,8 +136,17 @@ public class ListingResource {
     @Path("products")
     @Consumes(MediaType.APPLICATION_JSON)
     public Response createProduct(
-            @HeaderParam("X-Seller-Id") String sellerId,
-            CreateProductRequest request) {
+            @HeaderParam("X-Seller-Id")
+            @NotBlank(message = "X-Seller-Id header is required")
+            @Pattern(regexp = UUID_PATTERN, message = "X-Seller-Id must be a UUID")
+            String sellerId,
+
+            /*
+             * @Valid es lo que dispara la validación del cuerpo. Sin él, las anotaciones del
+             * record se ignorarían en silencio: Bean Validation valida en cascada solo donde
+             * se le pide explícitamente.
+             */
+            @Valid CreateProductRequest request) {
 
         var listing = catalog.createProduct(
                 parseSellerId(sellerId),
@@ -131,8 +162,12 @@ public class ListingResource {
     @Path("services")
     @Consumes(MediaType.APPLICATION_JSON)
     public Response createService(
-            @HeaderParam("X-Seller-Id") String sellerId,
-            CreateServiceRequest request) {
+            @HeaderParam("X-Seller-Id")
+            @NotBlank(message = "X-Seller-Id header is required")
+            @Pattern(regexp = UUID_PATTERN, message = "X-Seller-Id must be a UUID")
+            String sellerId,
+
+            @Valid CreateServiceRequest request) {
 
         var listing = catalog.createService(
                 parseSellerId(sellerId),
@@ -178,31 +213,29 @@ public class ListingResource {
     }
 
     /*
-     * Estos parseos lanzan BadRequestException, que JAX-RS ya traduce a 400.
-     *
-     * Son deliberadamente rudimentarios: en el paso 2.5 los sustituirá Bean Validation, que
-     * valida de forma declarativa y devuelve TODOS los errores de una vez en lugar de abortar
-     * en el primero.
+     * Conversión pura: el formato ya lo garantizó Bean Validation antes de llegar aquí, así
+     * que estos dos no necesitan defenderse.
      */
 
     private SellerId parseSellerId(String raw) {
-        if (raw == null || raw.isBlank()) {
-            throw new BadRequestException("Falta la cabecera X-Seller-Id");
-        }
-        try {
-            return SellerId.of(raw);
-        } catch (IllegalArgumentException e) {
-            throw new BadRequestException("X-Seller-Id no es un UUID válido: " + raw);
-        }
+        return SellerId.of(raw);
     }
 
     private ListingId parseListingId(String raw) {
-        try {
-            return ListingId.of(raw);
-        } catch (IllegalArgumentException e) {
-            throw new BadRequestException("El id no es un UUID válido: " + raw);
-        }
+        return ListingId.of(raw);
     }
+
+    /*
+     * Estos dos SÍ siguen necesitando try/catch, y la razón es justo la distinción del paso:
+     * Bean Validation comprueba la FORMA ("XYZ" son tres mayúsculas, "Europe/Atlantis" tiene
+     * pinta de zona IANA), pero no puede comprobar la EXISTENCIA. Que la moneda esté en ISO
+     * 4217 o la zona en la base de datos IANA solo lo sabe la biblioteca estándar, al
+     * intentar construirlas.
+     *
+     * Replicar aquí esos catálogos sería absurdo y quedaría desactualizado. La regla es la de
+     * siempre: valida declarativamente lo que es sintaxis, y deja que falle donde vive el
+     * conocimiento.
+     */
 
     private Money parseMoney(String amount, String currency) {
         try {

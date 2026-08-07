@@ -15,6 +15,9 @@ dependencies {
     // Serialización JSON para Quarkus REST. Arrastra Jackson y registra en build time
     // los readers/writers de cuerpo, sin descubrimiento por reflection en el arranque.
     implementation 'io.quarkus:quarkus-rest-jackson'
+    // Bean Validation (Jakarta Validation con Hibernate Validator). Valida la FORMA del
+    // payload en el borde; los invariantes de negocio siguen viviendo en el dominio.
+    implementation 'io.quarkus:quarkus-hibernate-validator'
     testImplementation 'io.quarkus:quarkus-junit'
     testImplementation 'io.rest-assured:rest-assured'
 }

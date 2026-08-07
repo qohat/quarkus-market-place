@@ -67,4 +67,16 @@ cat <<'EOF'
   *quarkusrestinvoker*
                     invoker de un endpoint REST. Llama a tu método con invokevirtual
                     directo, en vez de Method.invoke() por reflection.
+  *quarkusjacksonserializer*
+                    serializador Jackson generado para un DTO concreto. Escribe los
+                    campos uno a uno con acceso directo, en lugar de descubrirlos por
+                    reflection en la primera serialización.
+EOF
+
+cat <<'EOF'
+
+== Lectura fina ==
+  Un bean con _ClientProxy es @ApplicationScoped (o cualquier scope normal).
+  Un bean con solo _Bean, sin proxy, es @Singleton: en Quarkus REST los recursos
+  son singleton por defecto, y por eso no deben tener estado mutable en campos.
 EOF

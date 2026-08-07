@@ -12,6 +12,9 @@ dependencies {
     implementation enforcedPlatform("${quarkusPlatformGroupId}:${quarkusPlatformArtifactId}:${quarkusPlatformVersion}")
     implementation 'io.quarkus:quarkus-arc'
     implementation 'io.quarkus:quarkus-rest'
+    // Serialización JSON para Quarkus REST. Arrastra Jackson y registra en build time
+    // los readers/writers de cuerpo, sin descubrimiento por reflection en el arranque.
+    implementation 'io.quarkus:quarkus-rest-jackson'
     testImplementation 'io.quarkus:quarkus-junit'
     testImplementation 'io.rest-assured:rest-assured'
 }

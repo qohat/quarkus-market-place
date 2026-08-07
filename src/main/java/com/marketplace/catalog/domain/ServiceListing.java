@@ -30,27 +30,27 @@ public record ServiceListing(
 ) implements Listing {
 
     public ServiceListing {
-        Objects.requireNonNull(id, "id no puede ser null");
-        Objects.requireNonNull(sellerId, "sellerId no puede ser null");
-        Objects.requireNonNull(title, "title no puede ser null");
-        Objects.requireNonNull(price, "price no puede ser null");
-        Objects.requireNonNull(status, "status no puede ser null");
-        Objects.requireNonNull(slotDuration, "slotDuration no puede ser null");
-        Objects.requireNonNull(timeZone, "timeZone no puede ser null");
+        Objects.requireNonNull(id, "id must not be null");
+        Objects.requireNonNull(sellerId, "sellerId must not be null");
+        Objects.requireNonNull(title, "title must not be null");
+        Objects.requireNonNull(price, "price must not be null");
+        Objects.requireNonNull(status, "status must not be null");
+        Objects.requireNonNull(slotDuration, "slotDuration must not be null");
+        Objects.requireNonNull(timeZone, "timeZone must not be null");
 
         if (title.isBlank()) {
-            throw new IllegalArgumentException("El título no puede estar vacío");
+            throw new IllegalArgumentException("Listing title cannot be blank");
         }
         if (!price.isPositive()) {
-            throw new IllegalArgumentException("El precio debe ser positivo, pero era " + price);
+            throw new IllegalArgumentException("Listing price must be positive, but was " + price);
         }
         if (slotDuration.isZero() || slotDuration.isNegative()) {
             throw new IllegalArgumentException(
-                    "La duración de la franja debe ser positiva: " + slotDuration);
+                    "Slot duration must be positive, but was " + slotDuration);
         }
         if (maxConcurrentBookings < 1) {
             throw new IllegalArgumentException(
-                    "Debe admitir al menos una reserva simultánea: " + maxConcurrentBookings);
+                    "Must allow at least one concurrent booking, but was " + maxConcurrentBookings);
         }
     }
 
@@ -69,10 +69,10 @@ public record ServiceListing(
 
     @Override
     public ServiceListing withStatus(ListingStatus newStatus) {
-        Objects.requireNonNull(newStatus, "newStatus no puede ser null");
+        Objects.requireNonNull(newStatus, "newStatus must not be null");
         if (status.isTerminal() && newStatus != status) {
             throw new IllegalStateException(
-                    "No se puede salir del estado terminal " + status);
+                    "Cannot transition out of terminal state " + status);
         }
         return new ServiceListing(
                 id, sellerId, title, price, newStatus, slotDuration, timeZone, maxConcurrentBookings);

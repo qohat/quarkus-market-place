@@ -23,8 +23,8 @@ import java.util.Objects;
 public record Money(BigDecimal amount, Currency currency) implements Comparable<Money> {
 
     public Money {
-        Objects.requireNonNull(amount, "amount no puede ser null");
-        Objects.requireNonNull(currency, "currency no puede ser null");
+        Objects.requireNonNull(amount, "amount must not be null");
+        Objects.requireNonNull(currency, "currency must not be null");
         // Reasignar un componente en el compact constructor es legal y normaliza el valor
         // ANTES de que se asigne al campo final del record.
         amount = amount.setScale(currency.getDefaultFractionDigits(), RoundingMode.UNNECESSARY);
@@ -50,7 +50,7 @@ public record Money(BigDecimal amount, Currency currency) implements Comparable<
 
     public Money times(int factor) {
         if (factor < 0) {
-            throw new IllegalArgumentException("El factor no puede ser negativo: " + factor);
+            throw new IllegalArgumentException("Multiplier cannot be negative: " + factor);
         }
         return new Money(amount.multiply(BigDecimal.valueOf(factor)), currency);
     }
@@ -83,10 +83,10 @@ public record Money(BigDecimal amount, Currency currency) implements Comparable<
     }
 
     private void requireSameCurrency(Money other) {
-        Objects.requireNonNull(other, "other no puede ser null");
+        Objects.requireNonNull(other, "other must not be null");
         if (!currency.equals(other.currency)) {
             throw new IllegalArgumentException(
-                    "Monedas incompatibles: %s vs %s".formatted(
+                    "Cannot mix currencies: %s and %s".formatted(
                             currency.getCurrencyCode(), other.currency.getCurrencyCode()));
         }
     }

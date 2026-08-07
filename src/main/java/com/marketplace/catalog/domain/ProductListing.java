@@ -22,20 +22,20 @@ public record ProductListing(
 ) implements Listing {
 
     public ProductListing {
-        Objects.requireNonNull(id, "id no puede ser null");
-        Objects.requireNonNull(sellerId, "sellerId no puede ser null");
-        Objects.requireNonNull(title, "title no puede ser null");
-        Objects.requireNonNull(price, "price no puede ser null");
-        Objects.requireNonNull(status, "status no puede ser null");
+        Objects.requireNonNull(id, "id must not be null");
+        Objects.requireNonNull(sellerId, "sellerId must not be null");
+        Objects.requireNonNull(title, "title must not be null");
+        Objects.requireNonNull(price, "price must not be null");
+        Objects.requireNonNull(status, "status must not be null");
 
         if (title.isBlank()) {
-            throw new IllegalArgumentException("El título no puede estar vacío");
+            throw new IllegalArgumentException("Listing title cannot be blank");
         }
         if (!price.isPositive()) {
-            throw new IllegalArgumentException("El precio debe ser positivo, pero era " + price);
+            throw new IllegalArgumentException("Listing price must be positive, but was " + price);
         }
         if (availableStock < 0) {
-            throw new IllegalArgumentException("El stock no puede ser negativo: " + availableStock);
+            throw new IllegalArgumentException("Stock cannot be negative: " + availableStock);
         }
     }
 
@@ -52,10 +52,10 @@ public record ProductListing(
 
     @Override
     public ProductListing withStatus(ListingStatus newStatus) {
-        Objects.requireNonNull(newStatus, "newStatus no puede ser null");
+        Objects.requireNonNull(newStatus, "newStatus must not be null");
         if (status.isTerminal() && newStatus != status) {
             throw new IllegalStateException(
-                    "No se puede salir del estado terminal " + status);
+                    "Cannot transition out of terminal state " + status);
         }
         return new ProductListing(id, sellerId, title, price, newStatus, availableStock);
     }

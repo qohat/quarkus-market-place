@@ -18,6 +18,9 @@ dependencies {
     // Bean Validation (Jakarta Validation con Hibernate Validator). Valida la FORMA del
     // payload en el borde; los invariantes de negocio siguen viviendo en el dominio.
     implementation 'io.quarkus:quarkus-hibernate-validator'
+    // Genera el documento OpenAPI en build time a partir de los @Path, los DTOs y las
+    // anotaciones de Bean Validation. Incluye Swagger UI.
+    implementation 'io.quarkus:quarkus-smallrye-openapi'
     testImplementation 'io.quarkus:quarkus-junit'
     testImplementation 'io.rest-assured:rest-assured'
 }

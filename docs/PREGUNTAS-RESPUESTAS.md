@@ -313,3 +313,86 @@ Los daños concretos:
 
 **Regla:** el mapeo pertenece siempre al adaptador que lo necesita. Cada representación externa
 sabe cómo leer el dominio; el dominio no sabe de ninguna.
+
+### 2.6 · `ListingResource` es singleton. ¿Qué pasa si le añades un `private int contador` y lo incrementas en cada método?
+
+Falla, y conviene saber *exactamente* por qué, porque "no es thread-safe" se queda corto. Hay
+**tres** fallos superpuestos:
+
+1. **Pérdida de incrementos.** `contador++` no es una operación atómica: son tres pasos (leer,
+   sumar, escribir). Dos hilos pueden leer el mismo valor, sumar uno cada uno y escribir el mismo
+   resultado. Dos peticiones, un solo incremento.
+2. **Visibilidad entre hilos.** Sin `volatile` ni sincronización, el Modelo de Memoria de Java no
+   garantiza que un hilo llegue a ver nunca lo que escribió otro. El valor puede quedarse en la
+   caché de un núcleo indefinidamente. Esto no es teórico: es la razón de que estos bugs
+   desaparezcan al añadir un `println`, que introduce una barrera de memoria.
+3. **Contención.** Aunque lo arreglaras con `AtomicInteger`, todas las peticiones estarían
+   compitiendo por escribir en la misma línea de caché. Bajo carga real, ese *false sharing*
+   degrada el rendimiento de forma medible.
+
+Y hay un cuarto problema, más de fondo: **el contador desaparece al reiniciar el pod y cada
+réplica lleva el suyo**. Un contador en memoria en un sistema que escala horizontalmente no mide
+nada útil. Lo correcto es un contador de Micrometer (módulo 8), que además se agrega entre
+instancias.
+
+### 2.7 · Si ya devolvemos el objeto completo en el cuerpo, ¿qué aporta la cabecera `Location`?
+
+Cuatro cosas que el cuerpo no da:
+
+1. **Es la respuesta estándar a "¿dónde vive esto ahora?"**. Un cliente genérico —una librería
+   HTTP, un test runner, una herramienta de API— sabe seguir un `Location` sin conocer tu esquema
+   JSON. Si el id va solo en el cuerpo, hay que documentar en qué campo está y cómo se compone la
+   URL.
+2. **Desacopla la construcción de URLs.** El cliente no tiene que saber que el recurso vive en
+   `/listings/{id}`. Si mañana mueves el recurso o añades un prefijo de versión, los clientes que
+   siguen el `Location` no se enteran.
+3. **Sobrevive a respuestas sin cuerpo.** Es habitual que un `POST` de creación devuelva 201
+   vacío por eficiencia. Con `Location`, ese caso sigue siendo utilizable.
+4. **Habilita caché y redirecciones intermedias.** Proxies y CDNs entienden `Location` sin
+   parsear el payload.
+
+El contrarrestante honesto: **devolver también el cuerpo ahorra un round-trip**. Por eso hacemos
+las dos cosas. Devolver solo `Location` obligaría a cada cliente a un `GET` inmediato.
+
+### 2.8 · Los mappers capturan `IllegalArgumentException`. ¿Qué riesgo tiene, y cómo se arregla?
+
+**El riesgo:** son excepciones del JDK, no tuyas. Las lanza `Integer.parseInt`, las lanza media
+biblioteca estándar, y las lanza cualquier dependencia de terceros ante un bug **tuyo**. Al
+mapearlas a 400 se producen tres daños:
+
+1. Un fallo interno se presenta como culpa del cliente.
+2. Desaparece de las métricas de error 5xx, así que **ninguna alerta se dispara**.
+3. El cliente reintenta una petición que nunca va a funcionar, porque el 400 le dice que el
+   problema es suyo.
+
+Es un fallo especialmente traicionero porque **degrada la observabilidad justo en los casos que
+más te importa observar**.
+
+**Mitigación parcial** (lo que hace este proyecto): registrar la excepción completa en WARN, para
+que quede rastro aunque la respuesta diga 4xx.
+
+**La solución correcta:** que el dominio lance excepciones propias —una jerarquía tipo
+`DomainValidationException`— y que los mappers cubran únicamente esas. Todo lo demás se convierte
+en un 500 honesto, que es lo que un fallo interno debe ser. Se paga con más tipos, y se cobra en
+que un 4xx significa de verdad "el cliente se equivocó".
+
+### 2.9 · El live reload dijo *Restarting* y los datos en memoria desaparecieron. ¿Por qué?
+
+Porque Quarkus **reinicia la aplicación**; no hace hot-swap de bytecode sobre un proceso vivo.
+
+Lo que hace es más listo que un reinicio normal: mantiene la JVM arrancada, conserva el
+classloader de aumentación y solo vuelve a ejecutar la augmentation y a reconstruir el contexto
+de la aplicación con las clases recompiladas. Por eso tarda ~0,4 s en vez de los segundos de un
+arranque en frío.
+
+Pero reconstruir el contexto de la aplicación significa **descartar todos los beans y crearlos de
+nuevo**. Nuestro `@ApplicationScoped` con el `ConcurrentHashMap` se recreó vacío, y con él se
+fueron los listings.
+
+Es la limitación fundamental del estado en memoria, y no solo en desarrollo: en producción, cada
+despliegue, cada reinicio de pod y cada escalado a cero se lleva ese estado por delante. Es
+exactamente la motivación del módulo 3.
+
+*Nota complementaria:* Quarkus distingue entre cambios que puede aplicar así y cambios que exigen
+un reinicio completo. Tocar `build.gradle` o una propiedad de **build time** obliga a rearrancar
+de verdad — otra consecuencia práctica de la pregunta 0.2.

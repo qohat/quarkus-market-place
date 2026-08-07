@@ -16,7 +16,7 @@ public class ListingNotFoundException extends RuntimeException {
     private final ListingId listingId;
 
     public ListingNotFoundException(ListingId listingId) {
-        super("No existe la publicación " + listingId);
+        super("No listing exists with id " + listingId);
         this.listingId = listingId;
     }
 

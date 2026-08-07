@@ -27,9 +27,9 @@ public final class Listings {
      * compilar — y eso es exactamente lo que queremos.
      */
     public static FulfillmentCheck check(Listing listing, int quantity) {
-        Objects.requireNonNull(listing, "listing no puede ser null");
+        Objects.requireNonNull(listing, "listing must not be null");
         if (quantity < 1) {
-            throw new IllegalArgumentException("La cantidad debe ser al menos 1: " + quantity);
+            throw new IllegalArgumentException("Quantity must be at least 1, but was " + quantity);
         }
 
         if (!listing.acceptsOrders()) {

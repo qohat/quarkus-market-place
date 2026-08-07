@@ -7,7 +7,7 @@ import java.util.UUID;
 public record ListingId(UUID value) {
 
     public ListingId {
-        Objects.requireNonNull(value, "value no puede ser null");
+        Objects.requireNonNull(value, "value must not be null");
     }
 
     public static ListingId newId() {

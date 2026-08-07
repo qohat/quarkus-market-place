@@ -37,19 +37,19 @@ public class InMemoryListingRepository implements ListingRepository {
 
     @Override
     public void save(Listing listing) {
-        Objects.requireNonNull(listing, "listing no puede ser null");
+        Objects.requireNonNull(listing, "listing must not be null");
         store.put(listing.id(), listing);
     }
 
     @Override
     public Optional<Listing> findById(ListingId id) {
-        Objects.requireNonNull(id, "id no puede ser null");
+        Objects.requireNonNull(id, "id must not be null");
         return Optional.ofNullable(store.get(id));
     }
 
     @Override
     public List<Listing> findBySeller(SellerId sellerId) {
-        Objects.requireNonNull(sellerId, "sellerId no puede ser null");
+        Objects.requireNonNull(sellerId, "sellerId must not be null");
         return store.values().stream()
                 .filter(listing -> listing.sellerId().equals(sellerId))
                 .sorted(Comparator.comparing(Listing::title))
@@ -66,7 +66,7 @@ public class InMemoryListingRepository implements ListingRepository {
 
     @Override
     public boolean deleteById(ListingId id) {
-        Objects.requireNonNull(id, "id no puede ser null");
+        Objects.requireNonNull(id, "id must not be null");
         return store.remove(id) != null;
     }
 

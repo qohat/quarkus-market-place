@@ -65,3 +65,22 @@ Siglas y términos que van apareciendo, explicados sin dar nada por sabido.
 | **Saga** | Transacción distribuida partida en pasos locales, cada uno con su acción compensatoria. Se usa cuando no hay una transacción ACID que abarque varios servicios. |
 | **Outbox** | Patrón para publicar eventos de forma fiable: en vez de escribir en la BD *y* en Kafka (que no es atómico), escribes el evento en una tabla dentro de la misma transacción y un proceso aparte lo publica. |
 | **Idempotencia** | Que repetir una operación dé el mismo resultado que hacerla una vez. Imprescindible cuando la red puede duplicar mensajes. |
+| **Puerto / Adaptador** | El puerto es una interfaz que **el dominio** define para lo que necesita; el adaptador la implementa desde fuera. Invierte la dependencia: el dominio no depende de la base de datos, la base de datos se adapta al dominio. |
+
+## API y HTTP
+
+| Término | Qué significa |
+|---|---|
+| **DTO** | Data Transfer Object. Objeto cuya única función es viajar por la API, separado del modelo de dominio para que el JSON público no quede acoplado a la estructura interna. |
+| **Bean Validation** | Especificación de Jakarta (implementada por Hibernate Validator) para validar de forma declarativa con anotaciones: `@NotBlank`, `@Positive`, `@Pattern`. Devuelve **todas** las infracciones a la vez. |
+| **`@Valid`** | Lo que dispara la validación en cascada de un objeto. Sin él, las anotaciones del DTO se ignoran en silencio. |
+| **`ExceptionMapper`** | Componente JAX-RS que traduce un tipo de excepción a una respuesta HTTP. Es lo que permite que el dominio lance excepciones sin saber nada de códigos de estado. |
+| **RFC 7807** | *Problem Details for HTTP APIs*. Formato estándar de cuerpo de error, con `type`, `title`, `status`, `detail` e `instance`. Se sirve como `application/problem+json`. |
+| **`application/problem+json`** | El media type del RFC 7807. Permite a un cliente distinguir por la cabecera si recibió el recurso o una explicación de por qué no. |
+| **OpenAPI** | Especificación para describir APIs REST de forma legible por máquinas. Antes se llamaba Swagger. Quarkus lo genera en build time desde tus anotaciones. |
+| **Swagger UI** | Interfaz web que renderiza un documento OpenAPI y permite probar los endpoints. En Quarkus vive en `/q/swagger-ui`. |
+| **Discriminador** | Campo del JSON (`"type": "PRODUCT"`) que indica de qué variante concreta se trata, para que el cliente —y el deserializador— sepan qué esperar. |
+| **201 + `Location`** | La respuesta correcta a una creación: el código dice que se creó, y la cabecera dice dónde vive, sin que el cliente tenga que componer la URL. |
+| **409 Conflict** | "La petición está bien; es el estado del servidor el que no encaja". Distinto de 400, que dice "arregla la petición". |
+| **ISO 4217** | El estándar de códigos de moneda de tres letras: EUR, USD, JPY. Define también cuántos decimales tiene cada una. |
+| **IANA time zone** | Identificador de zona horaria como `Europe/Madrid`, frente a un desfase fijo como `+02:00`. Conserva la intención a lo largo de los cambios de horario de verano. |

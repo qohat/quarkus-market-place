@@ -72,7 +72,7 @@ public class ListingCatalog {
      * @throws ListingNotFoundException si no existe
      */
     public Listing byId(ListingId id) {
-        Objects.requireNonNull(id, "id no puede ser null");
+        Objects.requireNonNull(id, "id must not be null");
         return repository.findById(id).orElseThrow(() -> new ListingNotFoundException(id));
     }
 
@@ -83,7 +83,7 @@ public class ListingCatalog {
 
     /** El panel de un vendedor: incluye sus borradores y archivadas. */
     public List<Listing> ownedBy(SellerId sellerId) {
-        Objects.requireNonNull(sellerId, "sellerId no puede ser null");
+        Objects.requireNonNull(sellerId, "sellerId must not be null");
         return repository.findBySeller(sellerId);
     }
 

@@ -13,6 +13,7 @@ import org.junit.jupiter.api.Test;
 import java.util.UUID;
 
 import static io.restassured.RestAssured.given;
+import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.notNullValue;
@@ -259,18 +260,77 @@ class ListingResourceTest {
     }
 
     @Nested
-    @DisplayName("errores todavía sin mapear (se arregla en el paso 2.6)")
-    class PendingErrorHandling {
+    @DisplayName("errores")
+    class ErrorHandling {
 
         @Test
-        @DisplayName("una publicación inexistente responde 500, no 404")
-        void missingListingReturns500ForNow() {
-            // ListingNotFoundException es una excepción de dominio que nadie traduce todavía,
-            // así que Quarkus la trata como error no controlado. Debería ser un 404, y este
-            // test lo documenta: en el paso 2.6 añadiremos el ExceptionMapper y pasará a 404.
+        @DisplayName("una publicación inexistente responde 404 en formato RFC 7807")
+        void missingListingReturns404() {
+            String id = UUID.randomUUID().toString();
+
             given()
-                    .when().get("/listings/{id}", UUID.randomUUID().toString())
-                    .then().statusCode(500);
+                    .when().get("/listings/{id}", id)
+                    .then()
+                    .statusCode(404)
+                    // El media type distingue "aquí tienes el recurso" de "aquí tienes el motivo".
+                    .contentType("application/problem+json")
+                    .body("type", equalTo("https://marketplace.local/problems/listing-not-found"))
+                    .body("title", equalTo("Listing not found"))
+                    .body("status", equalTo(404))
+                    .body("detail", containsString(id))
+                    .body("instance", equalTo("/listings/" + id));
+        }
+
+        @Test
+        @DisplayName("una transición ilegal responde 409 Conflict, no 400")
+        void illegalTransitionReturns409() {
+            String id = createPublishedProduct("Teclado", 10);
+            given().when().post("/listings/{id}/archive", id).then().statusCode(200);
+
+            // La petición es impecable; lo que no encaja es el estado del recurso.
+            given()
+                    .when().post("/listings/{id}/publish", id)
+                    .then()
+                    .statusCode(409)
+                    .contentType("application/problem+json")
+                    .body("type", equalTo(
+                            "https://marketplace.local/problems/invalid-state-transition"));
+        }
+
+        @Test
+        @DisplayName("un invariante de dominio roto responde 400 en el mismo formato")
+        void domainInvariantReturns400() {
+            // Precio cero: el @Pattern lo acepta, pero ProductListing exige precio positivo.
+            given()
+                    .contentType(ContentType.JSON)
+                    .header("X-Seller-Id", sellerId)
+                    .body("""
+                            { "title": "Gratis", "amount": "0.00", "currency": "EUR", "stock": 1 }
+                            """)
+                    .when().post("/listings/products")
+                    .then()
+                    .statusCode(400)
+                    .contentType("application/problem+json")
+                    .body("type", equalTo("https://marketplace.local/problems/invalid-request"));
+        }
+
+        @Test
+        @DisplayName("los errores de validación usan el mismo formato que los demás")
+        void validationErrorsShareTheSameFormat() {
+            given()
+                    .contentType(ContentType.JSON)
+                    .header("X-Seller-Id", sellerId)
+                    .body("""
+                            { "title": "", "amount": "25.00", "currency": "EUR", "stock": 1 }
+                            """)
+                    .when().post("/listings/products")
+                    .then()
+                    .statusCode(400)
+                    .contentType("application/problem+json")
+                    .body("type", equalTo("https://marketplace.local/problems/validation-failed"))
+                    .body("status", equalTo(400))
+                    .body("violations[0].field", equalTo("title"))
+                    .body("violations[0].message", equalTo("title is required"));
         }
     }
 }

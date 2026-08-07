@@ -9,7 +9,6 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Positive;
-import jakarta.ws.rs.BadRequestException;
 import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.DefaultValue;
 import jakarta.ws.rs.GET;
@@ -226,7 +225,7 @@ public class ListingResource {
     }
 
     /*
-     * Estos dos SÍ siguen necesitando try/catch, y la razón es justo la distinción del paso:
+     * Estos dos SÍ necesitan traducir el error, y la razón es justo la distinción del paso:
      * Bean Validation comprueba la FORMA ("XYZ" son tres mayúsculas, "Europe/Atlantis" tiene
      * pinta de zona IANA), pero no puede comprobar la EXISTENCIA. Que la moneda esté en ISO
      * 4217 o la zona en la base de datos IANA solo lo sabe la biblioteca estándar, al
@@ -235,13 +234,18 @@ public class ListingResource {
      * Replicar aquí esos catálogos sería absurdo y quedaría desactualizado. La regla es la de
      * siempre: valida declarativamente lo que es sintaxis, y deja que falle donde vive el
      * conocimiento.
+     *
+     * Lo que sí hacemos es reescribir el mensaje: Currency.getInstance("XYZ") lanza una
+     * excepción cuyo texto es, literalmente, "XYZ". Inútil para quien recibe el 400.
      */
 
     private Money parseMoney(String amount, String currency) {
         try {
             return Money.of(amount, currency);
         } catch (RuntimeException e) {
-            throw new BadRequestException("Importe o moneda no válidos: " + amount + " " + currency);
+            throw new IllegalArgumentException(
+                    "Cannot interpret '%s %s' as an amount: %s"
+                            .formatted(amount, currency, e.getMessage()));
         }
     }
 
@@ -249,7 +253,7 @@ public class ListingResource {
         try {
             return ZoneId.of(raw);
         } catch (RuntimeException e) {
-            throw new BadRequestException("Zona horaria no válida: " + raw);
+            throw new IllegalArgumentException("'%s' is not a known IANA time zone".formatted(raw));
         }
     }
 }

@@ -13,6 +13,15 @@ usando Java 25 y Quarkus 3.38, hasta llegar a sistemas distribuidos a escala.
 4. **Preguntas de repaso** al final de cada módulo, estilo entrevista técnica.
 5. **Todo se documenta aquí** y las siglas se explican en el [glosario](GLOSARIO.md).
 6. **Todo se testea.** Si no hay test, no está terminado.
+7. **Las preguntas de repaso se responden** en el [banco de preguntas](PREGUNTAS-RESPUESTAS.md),
+   con el razonamiento completo y los trade-offs. Es el material de estudio para entrevistas.
+
+## Documentos transversales
+
+| Documento | Para qué |
+|---|---|
+| [GLOSARIO.md](GLOSARIO.md) | Siglas y términos explicados sin dar nada por sabido |
+| [PREGUNTAS-RESPUESTAS.md](PREGUNTAS-RESPUESTAS.md) | Todas las preguntas de repaso, con respuesta razonada |
 
 ## Módulos
 

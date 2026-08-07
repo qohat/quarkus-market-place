@@ -21,6 +21,11 @@ dependencies {
     // Genera el documento OpenAPI en build time a partir de los @Path, los DTOs y las
     // anotaciones de Bean Validation. Incluye Swagger UI.
     implementation 'io.quarkus:quarkus-smallrye-openapi'
+    // Persistencia: Hibernate ORM con la capa Panache encima, y el driver JDBC de PostgreSQL.
+    // Declarar el driver es lo único que hace falta para que Dev Services levante la base de
+    // datos en desarrollo y en test.
+    implementation 'io.quarkus:quarkus-hibernate-orm-panache'
+    implementation 'io.quarkus:quarkus-jdbc-postgresql'
     testImplementation 'io.quarkus:quarkus-junit'
     testImplementation 'io.rest-assured:rest-assured'
 }

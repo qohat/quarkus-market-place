@@ -1,0 +1,2 @@
+# Ejecuta `sdk env` al entrar al proyecto (o `sdk env install` la primera vez)
+java=25.0.4-tem

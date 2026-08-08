@@ -396,3 +396,207 @@ exactamente la motivación del módulo 3.
 *Nota complementaria:* Quarkus distingue entre cambios que puede aplicar así y cambios que exigen
 un reinicio completo. Tocar `build.gradle` o una propiedad de **build time** obliga a rearrancar
 de verdad — otra consecuencia práctica de la pregunta 0.2.
+
+
+---
+
+# Módulo 3 — Persistencia
+
+### 3.1 · Tu suite crece a 400 tests de integración y tarda 15 minutos. ¿Qué haces?
+
+Lo primero es entender de dónde sale el tiempo, porque hay dos costes distintos y se atacan de
+formas opuestas.
+
+**El arranque de la aplicación.** Quarkus **reutiliza la misma instancia** entre clases
+`@QuarkusTest` mientras la configuración no cambie. El asesino silencioso es todo lo que fuerza un
+reinicio: `@TestProfile` distinto, `@QuarkusTestResource`, `@InjectMock` sobre beans distintos.
+Cada variación crea otra instancia. Ordenar los tests para **agrupar los que comparten
+configuración** puede reducir el tiempo a la mitad sin tocar ni un test.
+
+**El contenedor.** Testcontainers levanta uno por ejecución. Con `testcontainers.reuse.enable=true`
+en `~/.testcontainers.properties`, el contenedor sobrevive entre ejecuciones locales — enorme
+ganancia en el bucle de desarrollo, aunque en CI no aplique.
+
+Después, en orden de rentabilidad:
+
+1. **Mover tests hacia abajo en la pirámide.** La mayoría de los "tests de integración" no prueban
+   integración: prueban lógica que podría vivir en un test de dominio. Nuestros 106 tests corren en
+   diez segundos porque solo los que de verdad necesitan base de datos la usan.
+2. **Paralelizar**, pero con cuidado: exige aislamiento real entre tests. Los que usan
+   `@TestTransaction` lo toleran; los que limpian una tabla compartida, no. Ese es un argumento
+   práctico a favor del rollback frente al `DELETE FROM`.
+3. **Partir la suite**: los de dominio en cada push, los de integración antes de mezclar.
+
+Lo que **no** haría es cambiar a H2 para ganar velocidad. Es cambiar tiempo de CI por bugs en
+producción — ver la siguiente pregunta.
+
+### 3.2 · ¿Qué bug concreto se te escaparía usando H2 en tests y PostgreSQL en producción?
+
+Ejemplos reales, no generalidades:
+
+- **Sensibilidad a mayúsculas y `NULL` en el orden.** PostgreSQL ordena `NULL` al final en `ASC`;
+  otros motores al principio. Una consulta paginada ordenada por una columna anulable devuelve
+  resultados distintos, y tu test pasa.
+- **Sintaxis específica.** `ON CONFLICT DO UPDATE`, `RETURNING`, índices parciales, `JSONB`,
+  arrays, `ILIKE`. Nuestro índice parcial `WHERE status IN (...)` ni siquiera se crearía.
+- **Tipos.** El caso `bpchar` de este módulo es exactamente esto: un problema que solo existe en
+  PostgreSQL y que H2 nunca habría revelado.
+- **Comportamiento transaccional.** PostgreSQL usa MVCC; el nivel de aislamiento por defecto y el
+  modo en que detecta conflictos de escritura no coinciden con los de otros motores. Un test de
+  concurrencia que pasa en H2 no dice nada sobre producción.
+- **`SELECT ... FOR UPDATE SKIP LOCKED`**, imprescindible para colas de trabajo en base de datos,
+  y que otros motores no implementan igual.
+
+La regla: **la base de datos no es un detalle intercambiable**. Es la pieza con más semántica
+propia de todo el sistema, y cualquier cosa no trivial depende de su motor concreto.
+
+### 3.3 · Los CHECK constraints repiten invariantes del dominio. ¿No contradice la regla del módulo 2 de no duplicar reglas de negocio?
+
+No, y la diferencia está en **qué se está protegiendo**.
+
+En el módulo 2 la regla era no duplicar reglas de negocio **en los DTOs**. Un DTO es *un camino de
+entrada más*: si la regla vive solo ahí, la operación que llegue por Kafka se la salta. La
+duplicación es mala porque crea dos copias que divergen y **ninguna de las dos es autoritativa**.
+
+La base de datos es otra cosa: es el **custodio final del estado**, y la aplicación no es su único
+cliente. Contra estos datos escriben migraciones, jobs de backfill, herramientas de importación y
+personas con `psql` a las tres de la mañana. Un CHECK es la única regla que **nadie puede
+saltarse**, ni siquiera saltándose la aplicación entera.
+
+La otra diferencia es qué pasa cuando divergen. Si un DTO y el dominio discrepan, gana el DTO en
+silencio y el invariante se rompe. Si un CHECK y el dominio discrepan, la escritura **falla
+ruidosamente**: te enteras al instante.
+
+Formulado como regla: duplica hacia **adentro** (hacia el custodio del estado), nunca hacia
+**afuera** (hacia los caminos de entrada).
+
+### 3.4 · `@Enumerated(EnumType.ORDINAL)`: describe el bug exacto
+
+`ORDINAL` guarda la **posición** del valor en la declaración del enum:
+
+```java
+enum ListingStatus { DRAFT, PUBLISHED, PAUSED, ARCHIVED }
+//                     0        1        2         3
+```
+
+En la base de datos, una publicación publicada es un `1`.
+
+Meses después, alguien añade un estado donde le parece natural:
+
+```java
+enum ListingStatus { DRAFT, PENDING_REVIEW, PUBLISHED, PAUSED, ARCHIVED }
+//                     0          1             2        3         4
+```
+
+**En ese instante, todas las publicaciones que estaban `PUBLISHED` pasan a ser
+`PENDING_REVIEW`.** Todo el catálogo desaparece de la tienda.
+
+Lo que lo convierte en uno de los peores bugs posibles:
+
+1. **No falla nada.** No hay excepción, ni error de migración, ni aviso. Los datos son válidos y
+   significan otra cosa.
+2. **Los tests pasan.** Escriben y leen con el mismo enum, así que son coherentes consigo mismos.
+   Solo los datos preexistentes están corrompidos, y en test no hay.
+3. **Es difícil de revertir.** Al descubrirlo, hay filas nuevas escritas con el ordinal nuevo
+   mezcladas con las viejas. Ya no hay forma de distinguir qué significaba cada `1`.
+4. **El culpable no lo sabía.** Reordenar constantes de un enum parece un cambio cosmético.
+
+Con `STRING` la columna dice `'PUBLISHED'` y el orden del enum deja de importar. Cuesta unos bytes
+por fila; es la mejor relación coste-beneficio de todo el mapeo JPA.
+
+### 3.5 · `save()` actualiza sin llamar a ningún método. ¿Cómo se llama y qué peligro tiene?
+
+Se llama **dirty checking** (comprobación de estado sucio). Hibernate guarda una instantánea de
+cada entidad al cargarla y, al cerrar la transacción, compara campo a campo y emite un UPDATE por
+cada diferencia.
+
+Los peligros:
+
+1. **Escrituras accidentales.** Cualquier modificación de una entidad gestionada se persiste,
+   aunque fuera un cálculo temporal. El caso clásico: un método de "consulta" que normaliza un
+   campo para compararlo y acaba escribiendo en la base de datos.
+2. **UPDATEs invisibles en el flush.** El SQL no se emite donde escribiste el código, sino al
+   cerrar la transacción. Ordenar tu código no ordena tus escrituras, y eso importa cuando hay
+   locks: dos transacciones que actualizan las mismas filas en distinto orden se abrazan en un
+   deadlock que no se explica leyendo el código.
+3. **Coste de la comparación.** Con muchas entidades gestionadas, cada flush recorre todas. Es la
+   otra cara del problema de la caché de primer nivel en procesos por lotes.
+4. **Modificar dentro de un bucle de lectura.** Ese `entity.setX(...)` en medio de un informe
+   escribe en producción.
+
+Mitigaciones: `@Transactional(SUPPORTS)` o sesiones de solo lectura para las consultas, `detach()`
+para lo que no debe persistirse, y trabajar con objetos de dominio inmutables —que es justo lo que
+hacemos: fuera del repositorio no hay ninguna entidad gestionada a la vista.
+
+### 3.6 · ¿Por qué `@TestTransaction` funciona en los tests de repositorio y no en los de REST?
+
+Porque **una transacción está atada a un hilo**.
+
+`@TestTransaction` abre una transacción antes del test y la revierte después. En un test de
+repositorio, el test llama al repositorio directamente: mismo hilo, misma transacción, y el
+rollback cubre todo lo escrito.
+
+En un test de REST, RestAssured hace una **petición HTTP real**. La atiende un hilo del servidor,
+que abre **su propia** transacción y la confirma al responder. Cuando el test hace rollback, está
+revirtiendo su transacción —que no escribió nada—, mientras los datos del endpoint siguen
+commiteados.
+
+De ahí que los tests REST necesiten limpieza explícita.
+
+Corolario práctico: ese mismo razonamiento explica por qué los tests con `@TestTransaction` se
+pueden paralelizar y los que limpian una tabla compartida no.
+
+### 3.7 · Optimista o pesimista para descontar stock en un flash sale
+
+**Pesimista**, y el razonamiento es lo que se está evaluando.
+
+El bloqueo optimista asume que los conflictos son raros: deja actuar a todos y el perdedor repite
+el trabajo. Es una apuesta excelente para editar la ficha de un producto, donde dos ediciones
+simultáneas son casi imposibles.
+
+Un flash sale invierte la premisa. Diez mil personas compiten por la misma fila en el mismo
+segundo. Con optimista:
+
+- Casi todos pierden y reintentan.
+- Los reintentos generan **más** contención, no menos.
+- Se entra en *livelock*: mucho trabajo, muy poco progreso, y el rendimiento **cae** al aumentar la
+  carga, que es el peor modo de fallo posible.
+
+Con pesimista (`SELECT … FOR UPDATE`) las peticiones se serializan sobre esa fila. Va "lento", pero
+progresa de forma constante y predecible bajo cualquier carga.
+
+**La respuesta que distingue a un senior** es que en un flash sale de verdad no se elige entre
+esas dos, sino que se saca la contención de la base de datos: una actualización atómica
+condicional en una sola sentencia,
+
+```sql
+UPDATE listing SET available_stock = available_stock - 1
+ WHERE id = ? AND available_stock >= 1
+```
+
+que no necesita leer antes ni mantener lock alguno entre sentencias — si afecta a 0 filas, no
+había stock. Y por encima, un contador en Redis o una cola virtual que absorba el pico antes de
+que llegue a la base de datos. Es el tema del módulo 6.
+
+### 3.8 · ¿Por qué un problema N+1 no lo detecta ningún test funcional?
+
+Porque **el resultado es correcto**. El N+1 no es un bug de comportamiento: es un bug de coste.
+Devuelve exactamente los mismos datos que la versión eficiente, así que cualquier aserción sobre
+la respuesta pasa.
+
+Y tampoco se ve mirando:
+
+- **No hay excepción ni log.** Son consultas legítimas y rápidas cada una por separado.
+- **Es invisible con pocos datos.** Con 20 filas de test, 21 consultas tardan milisegundos. El
+  problema aparece con 5.000 filas reales.
+- **Depende del contexto, no del código.** Como comprobamos en este módulo, el mismo bucle puede
+  costar 2 consultas o 40 según lo que la sesión hubiera cargado antes. Un cambio inocuo aguas
+  arriba lo enciende sin que nadie toque el bucle.
+
+Por eso hace falta un test de **presupuesto de consultas**: no asegura *qué* devuelve el código,
+sino *cuánto cuesta*. Con las estadísticas de Hibernate, un N+1 pasa de ser un problema de
+rendimiento invisible a un build rojo.
+
+La variante más robusta del assert no es "exactamente 2 consultas" sino **"el número de consultas
+no cambia con el volumen de datos"**, que es la firma exacta del N+1 y no se rompe al añadir una
+consulta legítima.

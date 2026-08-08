@@ -15,6 +15,7 @@ import jakarta.persistence.Id;
 import jakarta.persistence.Inheritance;
 import jakarta.persistence.InheritanceType;
 import jakarta.persistence.Table;
+import jakarta.persistence.Version;
 
 import java.math.BigDecimal;
 import java.util.Currency;
@@ -99,6 +100,25 @@ public abstract class ListingEntity {
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 16)
     ListingStatus status;
+
+    /**
+     * Contador de bloqueo optimista, gestionado por Hibernate.
+     *
+     * <p>Nunca se asigna a mano. Hibernate lo incluye en el {@code WHERE} de cada UPDATE y lo
+     * incrementa; si el UPDATE afecta a cero filas, sabe que alguien escribió antes y lanza
+     * {@code OptimisticLockException}.
+     *
+     * <p>Fíjate en que <strong>no aparece en el modelo de dominio</strong>. Eso tiene una
+     * consecuencia importante y fácil de pasar por alto: protege contra escrituras concurrentes
+     * dentro de una misma sesión de Hibernate, pero <em>no</em> contra el «lost update» entre dos
+     * peticiones HTTP distintas, porque nuestro {@code save()} recarga la entidad y con ella la
+     * versión más reciente. Para cerrar ese hueco, la versión tiene que viajar al cliente y
+     * volver — con una cabecera {@code ETag} / {@code If-Match}, o como campo del DTO. Se aborda
+     * en el módulo 6, junto con la reserva de stock.
+     */
+    @Version
+    @Column(nullable = false)
+    long version;
 
     /** JPA exige un constructor sin argumentos. Protected para que nadie lo use por error. */
     protected ListingEntity() {

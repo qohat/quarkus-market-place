@@ -30,8 +30,8 @@ usando Java 25 y Quarkus 3.38, hasta llegar a sistemas distribuidos a escala.
 | 0 | Fundamentos de Quarkus | ✅ | [00-fundamentos-quarkus.md](00-fundamentos-quarkus.md) |
 | 1 | Dominio con Java moderno | ✅ | [01-dominio-y-java-moderno.md](01-dominio-y-java-moderno.md) |
 | 2 | REST y ARC | ✅ | [02-rest-y-arc.md](02-rest-y-arc.md) |
-| 3 | Persistencia | 🔄 siguiente | — |
-| 4 | Concurrencia: bloqueante vs reactivo vs virtual threads | ⏳ | — |
+| 3 | Persistencia | ✅ | [03-persistencia.md](03-persistencia.md) |
+| 4 | Concurrencia: bloqueante vs reactivo vs virtual threads | 🔄 siguiente | — |
 | 5 | Seguridad | ⏳ | — |
 | 6 | Bounded contexts e inventario | ⏳ | — |
 | 7 | Mensajería: Kafka, outbox y saga | ⏳ | — |

@@ -1,0 +1,40 @@
+-- =============================================================================
+-- V2 — Columna de versión para bloqueo optimista
+--
+-- El problema que resuelve es el «lost update»:
+--
+--   T1: lee stock = 10
+--   T2: lee stock = 10
+--   T1: escribe stock = 9   (vendió una)
+--   T2: escribe stock = 9   (vendió otra)
+--   --> se vendieron dos unidades y el stock solo bajó una. Falta una unidad.
+--
+-- Ninguna de las dos transacciones falla. Ningún log registra nada raro. El
+-- descuadre solo aparece cuando alguien cuenta el inventario físico.
+--
+-- El bloqueo OPTIMISTA no bloquea nada: añade un contador que Hibernate
+-- incluye en el WHERE de cada UPDATE y luego incrementa.
+--
+--   UPDATE listing SET ..., version = 3 WHERE id = ? AND version = 2
+--
+-- Si otra transacción escribió primero, la fila ya tiene version = 3, el WHERE
+-- no encuentra nada, y Hibernate lanza OptimisticLockException al ver que
+-- actualizó cero filas. Nadie espera a nadie; el perdedor se entera y reintenta.
+--
+-- Frente al bloqueo PESIMISTA (SELECT ... FOR UPDATE), que sí toma un lock en
+-- la fila y hace esperar a los demás:
+--
+--   Optimista   escala mucho mejor y no puede provocar deadlocks, pero
+--               desperdicia el trabajo del perdedor. Ideal cuando los
+--               conflictos son raros: editar una ficha de producto.
+--   Pesimista   nadie repite trabajo, pero serializa el acceso y puede formar
+--               deadlocks. Ideal cuando los conflictos son la norma:
+--               descontar stock en un flash sale (módulo 6).
+--
+-- Sin DEFAULT 0 esta migración fallaría en cuanto la tabla tuviera filas, al
+-- ser la columna NOT NULL. Es el patrón habitual para añadir columnas
+-- obligatorias a tablas ya pobladas.
+-- =============================================================================
+
+ALTER TABLE listing
+    ADD COLUMN version BIGINT NOT NULL DEFAULT 0;

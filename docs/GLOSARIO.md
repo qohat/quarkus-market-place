@@ -84,3 +84,24 @@ Siglas y términos que van apareciendo, explicados sin dar nada por sabido.
 | **409 Conflict** | "La petición está bien; es el estado del servidor el que no encaja". Distinto de 400, que dice "arregla la petición". |
 | **ISO 4217** | El estándar de códigos de moneda de tres letras: EUR, USD, JPY. Define también cuántos decimales tiene cada una. |
 | **IANA time zone** | Identificador de zona horaria como `Europe/Madrid`, frente a un desfase fijo como `+02:00`. Conserva la intención a lo largo de los cambios de horario de verano. |
+
+## Persistencia
+
+| Término | Qué significa |
+|---|---|
+| **Flyway** | Herramienta de migraciones de esquema versionadas. Ficheros `V<n>__descripcion.sql` que se aplican en orden y quedan registrados, de forma que cualquier entorno se reconstruye igual. |
+| **Panache** | Capa de Quarkus sobre Hibernate ORM que elimina boilerplate. Sus métodos son `default` vacíos cuyo cuerpo Quarkus genera en build time dentro de tu clase. |
+| **Dirty checking** | Hibernate guarda una instantánea de cada entidad al cargarla y, al cerrar la transacción, emite un UPDATE por cada diferencia. Modificar una entidad gestionada ya la persiste, sin llamar a nada. |
+| **Caché de primer nivel** | La sesión de Hibernate recuerda las entidades que ya cargó y las sirve sin volver a la base de datos. Evita consultas repetidas, y en procesos por lotes largos se convierte en fuga de memoria. |
+| **N+1** | Cargar N elementos y lanzar una consulta extra por cada uno. No falla ni aparece en los logs: solo hace la aplicación lenta cuando ya hay datos reales. |
+| **Presupuesto de consultas** | Test que fija cuántas sentencias SQL puede emitir una operación. Convierte un N+1 —invisible para los tests funcionales— en un build rojo. |
+| **Lost update** | Dos transacciones leen el mismo valor, ambas lo modifican y la segunda pisa a la primera. Nadie falla y el descuadre solo se descubre contando a mano. |
+| **Bloqueo optimista** | `@Version`: un contador que va en el `WHERE` del UPDATE. Si otro escribió antes, el UPDATE afecta a cero filas y salta `OptimisticLockException`. No bloquea a nadie. |
+| **Bloqueo pesimista** | `SELECT … FOR UPDATE`: toma un lock real sobre la fila y los demás esperan. Nadie repite trabajo, pero serializa el acceso y puede provocar deadlocks. |
+| **MVCC** | *Multi-Version Concurrency Control*. Cómo PostgreSQL permite leer sin bloquear: cada transacción ve una versión coherente de los datos. |
+| **Paginación por offset** | `LIMIT/OFFSET`. Simple y con salto a página arbitraria, pero degrada linealmente: la página 5.000 obliga a recorrer y descartar 100.000 filas. |
+| **Paginación por keyset** | «Dame los N siguientes a este valor». Cuesta lo mismo a cualquier profundidad, a cambio de perder el salto a una página concreta. La de los feeds con scroll infinito. |
+| **Orden total** | Criterio de ordenación que no deja empates, normalmente añadiendo la clave primaria. Sin él, la paginación duplica y pierde elementos. |
+| **SINGLE_TABLE** | Estrategia JPA de herencia: toda la jerarquía en una tabla con columna discriminadora. Sin joins al leer, a costa de columnas anulables. |
+| **`bpchar`** | El tipo real detrás de `CHAR(n)` en PostgreSQL: *blank-padded*, rellena con espacios hasta la longitud fija. Casi nunca es lo que quieres. |
+| **`@TestTransaction`** | Anotación de Quarkus que envuelve un test en una transacción y hace rollback al terminar. Solo sirve si el test y el código bajo prueba comparten hilo. |

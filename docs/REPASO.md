@@ -232,11 +232,33 @@ Quedaron dos decisiones abiertas:
 
 ## Para arrancar mañana
 
+**1 · Arranca Docker Desktop.** Dev Services lo necesita; sin él los tests fallan al levantar
+PostgreSQL.
+
+**2 · Comprueba que sigue todo en verde** antes de tocar nada — así, si algo se rompe después,
+sabes que lo rompiste tú:
+
 ```bash
 cd ~/Projects/Me/quarkus-market-place
 sdk env                    # fija Java 25 (lee .sdkmanrc)
-./gradlew test             # 106 en verde, tarda ~1 min: levanta PostgreSQL
-./gradlew quarkusDev       # http://localhost:8080/q/dev-ui
+./gradlew test             # 106 en verde, ~1 min: levanta PostgreSQL
 ```
 
-Docker tiene que estar arrancado: Dev Services lo necesita.
+**3 · Abre Claude Code en el proyecto** y dile literalmente:
+
+> Retomamos el curso de Quarkus. Vamos con el Ejercicio 1 de `docs/REPASO.md`: quiero escribir yo
+> `DigitalListing`. Explícame solo lo justo para empezar y déjame que el compilador me guíe.
+
+No hace falta que recuerdes nada más: el contexto del curso está guardado en memoria y el plan
+entero está en este documento.
+
+**4 · Para trastear a mano** mientras escribes:
+
+```bash
+./gradlew quarkusDev       # live reload · http://localhost:8080/q/dev-ui
+```
+
+### Si prefieres calentar leyendo
+
+Antes del ejercicio, quince minutos con [PREGUNTAS-RESPUESTAS.md](PREGUNTAS-RESPUESTAS.md) —
+en concreto las cinco de la Parte 4 — te devuelven al modo entrevista.

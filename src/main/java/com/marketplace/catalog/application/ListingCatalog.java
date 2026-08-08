@@ -12,6 +12,7 @@ import com.marketplace.catalog.domain.ServiceListing;
 import com.marketplace.shared.domain.Money;
 import com.marketplace.shared.domain.SellerId;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.transaction.Transactional;
 
 import java.time.Duration;
 import java.time.ZoneId;
@@ -28,8 +29,32 @@ import java.util.Objects;
  *
  * <p>Esa independencia es lo que permitirá que la misma operación se dispare desde un endpoint
  * REST y desde un mensaje de Kafka sin duplicar una línea de lógica.
+ *
+ * <h2>Por qué {@code @Transactional} vive aquí y no en el repositorio</h2>
+ *
+ * Una transacción delimita una <strong>unidad de trabajo del negocio</strong>, y quien sabe
+ * dónde empieza y acaba una es esta capa, no el repositorio.
+ *
+ * <p>Ponerla en cada método del repositorio parece más granular, pero rompe justo cuando
+ * importa: una operación que lea, decida y escriba abriría <em>tres</em> transacciones
+ * independientes, de modo que un fallo a mitad dejaría persistido lo anterior. Aquí, en cambio,
+ * {@code publish()} es atómico de principio a fin: o el listing queda publicado, o no cambia
+ * nada.
+ *
+ * <p>Esto se volverá crítico en el módulo 7: el patrón outbox depende de que escribir el estado
+ * y encolar el evento ocurran en <strong>la misma</strong> transacción.
+ *
+ * <p>Sí, importar {@code jakarta.transaction} mete una anotación de infraestructura en la capa
+ * de aplicación. Es un compromiso deliberado y el estándar del sector: decidir los límites
+ * transaccionales <em>es</em> responsabilidad de esta capa. El dominio, que es lo que de verdad
+ * queremos proteger, sigue intacto.
+ *
+ * <p>Va a nivel de clase, con lo que también cubre las lecturas. El coste de una transacción de
+ * solo lectura es despreciable, y a cambio cada método ve una foto coherente de la base de datos
+ * aunque haga varias consultas.
  */
 @ApplicationScoped
+@Transactional
 public class ListingCatalog {
 
     private final ListingRepository repository;

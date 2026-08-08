@@ -4,7 +4,6 @@ import com.marketplace.catalog.domain.Listing;
 import com.marketplace.catalog.domain.ListingId;
 import com.marketplace.catalog.domain.ListingRepository;
 import com.marketplace.shared.domain.SellerId;
-import jakarta.enterprise.context.ApplicationScoped;
 
 import java.util.Comparator;
 import java.util.List;
@@ -14,23 +13,27 @@ import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Adaptador de persistencia en memoria. Sustituido por Hibernate ORM en el módulo 3.
+ * Implementación en memoria del puerto, <strong>para tests</strong>.
  *
- * <p><strong>{@code @ApplicationScoped} implica concurrencia.</strong> Hay <em>una sola
- * instancia</em> de esta clase para toda la aplicación, y todas las peticiones HTTP la usan a la
- * vez desde hilos distintos. Un {@code HashMap} normal aquí sería una bomba: al redimensionarse
- * bajo escritura concurrente puede corromperse o entrar en bucle infinito. De ahí
- * {@link ConcurrentHashMap}.
+ * <p>Vivió en {@code src/main} durante el módulo 2 como adaptador real. Ahora que existe el
+ * adaptador de Panache, se muda aquí por dos razones:
  *
- * <p>Esa es la regla general con beans de scope largo: <strong>o no tienen estado mutable, o su
- * estado es thread-safe</strong>. La mayoría de tus servicios caerán en el primer grupo.
+ * <ul>
+ *   <li><strong>Ya no debe empaquetarse.</strong> Es código que producción nunca ejecutaría.</li>
+ *   <li><strong>Desaparece la ambigüedad de ARC.</strong> Dos beans implementando
+ *       {@code ListingRepository} harían fallar el build con {@code Ambiguous dependencies}.
+ *       Al dejar de ser un bean CDI —ya no lleva {@code @ApplicationScoped}— el conflicto se
+ *       evapita sin necesidad de cualificadores ni perfiles.</li>
+ * </ul>
  *
- * <p>Aviso para el módulo 6: que cada operación del mapa sea atómica <em>no</em> significa que
- * una secuencia de operaciones lo sea. Un "lee el stock, réstale 1, guárdalo" desde dos hilos
- * a la vez sobrevende. Ahí es donde aparecerán {@code compute} y las actualizaciones
- * condicionales.
+ * <p>Sigue siendo una clase normal, así que {@code new InMemoryListingRepository()} funciona
+ * igual que antes. Eso es lo que mantiene {@code ListingCatalogTest} corriendo en milisegundos,
+ * sin Docker y sin contenedor CDI: no es un mock que verifica interacciones, es una
+ * implementación real y completa del puerto.
+ *
+ * <p>Nota que conserva el {@link ConcurrentHashMap}. Ya no lo comparten hilos de petición, pero
+ * el coste es nulo y evita sorpresas si algún test ejercita concurrencia.
  */
-@ApplicationScoped
 public class InMemoryListingRepository implements ListingRepository {
 
     private final Map<ListingId, Listing> store = new ConcurrentHashMap<>();

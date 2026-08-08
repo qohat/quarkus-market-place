@@ -1,6 +1,6 @@
 package com.marketplace.catalog.infrastructure.rest;
 
-import com.marketplace.catalog.infrastructure.InMemoryListingRepository;
+import com.marketplace.support.DatabaseCleaner;
 import com.marketplace.shared.domain.SellerId;
 import io.quarkus.test.junit.QuarkusTest;
 import io.restassured.http.ContentType;
@@ -37,13 +37,13 @@ import static org.hamcrest.Matchers.startsWith;
 class ListingResourceTest {
 
     @Inject
-    InMemoryListingRepository repository;
+    DatabaseCleaner database;
 
     private String sellerId;
 
     @BeforeEach
     void setUp() {
-        repository.clear();
+        database.clear();
         sellerId = SellerId.newId().toString();
     }
 

@@ -4,6 +4,7 @@ import io.quarkus.arc.profile.IfBuildProfile;
 import io.smallrye.common.annotation.RunOnVirtualThread;
 import io.smallrye.mutiny.Uni;
 import io.vertx.mutiny.pgclient.PgPool;
+import jakarta.annotation.security.PermitAll;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.Produces;
@@ -41,6 +42,7 @@ import javax.sql.DataSource;
 @Path("/bench/db")
 @Produces(MediaType.TEXT_PLAIN)
 @IfBuildProfile("bench")
+@PermitAll
 public class DatabaseBenchmarkResource {
 
     /** 10 ms de trabajo en el servidor de base de datos, sin devolver datos que serializar. */

@@ -33,7 +33,19 @@ dependencies {
     // porque Hibernate ORM es bloqueante de raíz, así que el modelo reactivo no puede
     // reutilizar la capa de persistencia que ya tenemos: hay que bajar a SQL.
     implementation 'io.quarkus:quarkus-reactive-pg-client'
+    // Seguridad (módulo 5). OIDC en modo `service`: la API valida el JWT que le llega en la
+    // cabecera Authorization y no mantiene sesión. La validación es local, contra la clave
+    // pública del emisor, sin una llamada de red por petición.
+    implementation 'io.quarkus:quarkus-oidc'
     testImplementation 'io.quarkus:quarkus-junit'
+    // Genera tokens firmados en los tests sin levantar Keycloak: los tests de autorización
+    // no deberían depender de un contenedor para comprobar reglas de negocio.
+    testImplementation 'io.quarkus:quarkus-test-security'
+    testImplementation 'io.quarkus:quarkus-test-security-oidc'
+    // Cliente para pedir tokens REALES al Keycloak de Dev Services. Hace falta para los pocos
+    // tests que deben ejercitar la cadena completa —firma, emisor, caducidad, claim de roles—,
+    // que es justo lo que @TestSecurity se salta por diseño.
+    testImplementation 'io.quarkus:quarkus-test-keycloak-server'
     testImplementation 'io.rest-assured:rest-assured'
 }
 

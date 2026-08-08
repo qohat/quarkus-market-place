@@ -8,6 +8,9 @@ import com.marketplace.shared.domain.Page;
 import com.marketplace.shared.domain.PageRequest;
 import com.marketplace.shared.domain.SellerId;
 import com.marketplace.shared.infrastructure.rest.PageResponse;
+import jakarta.annotation.security.PermitAll;
+import jakarta.annotation.security.RolesAllowed;
+import jakarta.inject.Inject;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.NotBlank;
@@ -17,7 +20,6 @@ import jakarta.validation.constraints.PositiveOrZero;
 import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.DefaultValue;
 import jakarta.ws.rs.GET;
-import jakarta.ws.rs.HeaderParam;
 import jakarta.ws.rs.POST;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.PathParam;
@@ -27,6 +29,7 @@ import jakarta.ws.rs.core.Context;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 import jakarta.ws.rs.core.UriInfo;
+import org.eclipse.microprofile.jwt.JsonWebToken;
 
 import java.time.Duration;
 import java.time.ZoneId;
@@ -71,8 +74,35 @@ public class ListingResource {
     @Context
     UriInfo uriInfo;
 
+    /**
+     * El JWT validado de la petición en curso. Mismo truco que {@code UriInfo}: aunque este
+     * recurso sea singleton, lo inyectado es un proxy {@code @RequestScoped} que resuelve el
+     * token de la petición que se está atendiendo ahora mismo.
+     *
+     * <p>Cuando Quarkus llega aquí, el token ya está verificado: firma comprobada contra la clave
+     * pública del emisor, {@code exp} no caducado y {@code iss} correcto. Si algo de eso falla, la
+     * petición no llega al método: se responde 401 antes.
+     */
+    @Inject
+    JsonWebToken jwt;
+
     ListingResource(ListingCatalog catalog) {
         this.catalog = catalog;
+    }
+
+    /**
+     * La identidad de quien hace la petición, tomada del claim {@code sub}.
+     *
+     * <p>Se usa {@code sub} y no {@code upn} ni el email porque es el único identificador
+     * <strong>inmutable</strong> del token: los nombres de usuario y los correos cambian, y si el
+     * catálogo colgara de ellos, un vendedor perdería sus publicaciones al cambiarse el email.
+     *
+     * <p>Este es el único punto de toda la aplicación donde una identidad de OIDC se convierte en
+     * una del dominio. Si mañana se cambia de proveedor, o se mete una tabla de mapeo entre
+     * usuarios y vendedores, se toca aquí y en ningún otro sitio.
+     */
+    private SellerId requester() {
+        return SellerId.of(jwt.getSubject());
     }
 
     // ------------------------------------------------------------------ lectura
@@ -90,6 +120,7 @@ public class ListingResource {
      * valores por defecto.
      */
     @GET
+    @PermitAll
     public PageResponse<ListingResponse> list(
             @QueryParam("seller") String sellerId,
 
@@ -122,6 +153,7 @@ public class ListingResource {
 
     @GET
     @Path("{id}")
+    @PermitAll
     public ListingResponse byId(
             @PathParam("id")
             @Pattern(regexp = UUID_PATTERN, message = "id must be a UUID")
@@ -138,6 +170,7 @@ public class ListingResource {
      */
     @GET
     @Path("{id}/availability")
+    @PermitAll
     public AvailabilityResponse availability(
             @PathParam("id")
             @Pattern(regexp = UUID_PATTERN, message = "id must be a UUID")
@@ -159,19 +192,16 @@ public class ListingResource {
      * recién creado. Es lo que distingue una API bien educada: el cliente no tiene que componer
      * la URL a mano ni asumir cómo se construyen los identificadores.
      *
-     * <p>El vendedor llega por cabecera de forma provisional. En el módulo 5 saldrá del token
-     * OIDC, que es el único sitio del que puede salir sin abrir un agujero: si el cliente pudiera
-     * elegirlo, cualquiera publicaría en nombre de otro.
+     * <p>El vendedor sale del claim {@code sub} del token, y esa es la única forma segura de
+     * obtenerlo: mientras llegaba por la cabecera {@code X-Seller-Id}, cualquiera podía publicar
+     * en nombre de otro sin más que escribir otro UUID. Es la razón por la que
+     * {@link CreateProductRequest} nunca tuvo ese campo.
      */
     @POST
     @Path("products")
     @Consumes(MediaType.APPLICATION_JSON)
+    @RolesAllowed("seller")
     public Response createProduct(
-            @HeaderParam("X-Seller-Id")
-            @NotBlank(message = "X-Seller-Id header is required")
-            @Pattern(regexp = UUID_PATTERN, message = "X-Seller-Id must be a UUID")
-            String sellerId,
-
             /*
              * @Valid es lo que dispara la validación del cuerpo. Sin él, las anotaciones del
              * record se ignorarían en silencio: Bean Validation valida en cascada solo donde
@@ -180,7 +210,7 @@ public class ListingResource {
             @Valid CreateProductRequest request) {
 
         var listing = catalog.createProduct(
-                parseSellerId(sellerId),
+                requester(),
                 request.title(),
                 parseMoney(request.amount(), request.currency()),
                 request.stock());
@@ -192,16 +222,11 @@ public class ListingResource {
     @POST
     @Path("services")
     @Consumes(MediaType.APPLICATION_JSON)
-    public Response createService(
-            @HeaderParam("X-Seller-Id")
-            @NotBlank(message = "X-Seller-Id header is required")
-            @Pattern(regexp = UUID_PATTERN, message = "X-Seller-Id must be a UUID")
-            String sellerId,
-
-            @Valid CreateServiceRequest request) {
+    @RolesAllowed("seller")
+    public Response createService(@Valid CreateServiceRequest request) {
 
         var listing = catalog.createService(
-                parseSellerId(sellerId),
+                requester(),
                 request.title(),
                 parseMoney(request.amount(), request.currency()),
                 Duration.ofMinutes(request.slotMinutes()),
@@ -212,22 +237,33 @@ public class ListingResource {
 
     // ------------------------------------------------------------ ciclo de vida
 
+    /*
+     * @RolesAllowed("seller") comprueba que quien llama es UN vendedor. Que sea EL vendedor de
+     * esta publicación lo comprueba el caso de uso, que es el único sitio donde se puede saber:
+     * hace falta cargar la publicación para conocer a su dueño.
+     *
+     * Esa división es la clave del módulo. La anotación protege de los compradores; el caso de
+     * uso protege de los competidores.
+     */
     @POST
     @Path("{id}/publish")
+    @RolesAllowed("seller")
     public ListingResponse publish(@PathParam("id") String id) {
-        return ListingResponse.from(catalog.publish(parseListingId(id)));
+        return ListingResponse.from(catalog.publish(parseListingId(id), requester()));
     }
 
     @POST
     @Path("{id}/pause")
+    @RolesAllowed("seller")
     public ListingResponse pause(@PathParam("id") String id) {
-        return ListingResponse.from(catalog.pause(parseListingId(id)));
+        return ListingResponse.from(catalog.pause(parseListingId(id), requester()));
     }
 
     @POST
     @Path("{id}/archive")
+    @RolesAllowed("seller")
     public ListingResponse archive(@PathParam("id") String id) {
-        return ListingResponse.from(catalog.archive(parseListingId(id)));
+        return ListingResponse.from(catalog.archive(parseListingId(id), requester()));
     }
 
     // ---------------------------------------------------------------- auxiliares

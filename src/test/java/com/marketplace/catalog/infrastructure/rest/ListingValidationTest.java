@@ -3,6 +3,9 @@ package com.marketplace.catalog.infrastructure.rest;
 import com.marketplace.support.DatabaseCleaner;
 import com.marketplace.shared.domain.SellerId;
 import io.quarkus.test.junit.QuarkusTest;
+import io.quarkus.test.security.TestSecurity;
+import io.quarkus.test.security.oidc.Claim;
+import io.quarkus.test.security.oidc.OidcSecurity;
 import io.restassured.http.ContentType;
 import jakarta.inject.Inject;
 import org.junit.jupiter.api.BeforeEach;
@@ -31,6 +34,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @DisplayName("Validación de entrada")
 class ListingValidationTest {
 
+    /*
+     * La validación solo se ejercita si la petición pasa antes el control de acceso: sin token,
+     * todo esto respondería 401 y nunca llegaría a validarse nada. Ese orden —seguridad primero,
+     * validación después— es deliberado y está probado en ListingSecurityTest.
+     */
+    static final String VENDEDORA = "11111111-1111-1111-1111-111111111111";
+
     @Inject
     DatabaseCleaner database;
 
@@ -44,6 +54,8 @@ class ListingValidationTest {
 
     @Nested
     @DisplayName("cuerpo de la petición")
+    @TestSecurity(user = "vendedora", roles = "seller")
+    @OidcSecurity(claims = @Claim(key = "sub", value = ListingValidationTest.VENDEDORA))
     class RequestBody {
 
         @Test
@@ -53,7 +65,6 @@ class ListingValidationTest {
             // cuatro problemas independientes en una sola petición.
             List<String> messages = given()
                     .contentType(ContentType.JSON)
-                    .header("X-Seller-Id", sellerId)
                     .body("""
                             {
                               "title": "",
@@ -79,7 +90,6 @@ class ListingValidationTest {
         void emptyBodyFailsOnEveryRequiredField() {
             given()
                     .contentType(ContentType.JSON)
-                    .header("X-Seller-Id", sellerId)
                     .body("{}")
                     .when().post("/listings/products")
                     .then()
@@ -92,7 +102,6 @@ class ListingValidationTest {
         void rejectsNonDecimalAmount() {
             given()
                     .contentType(ContentType.JSON)
-                    .header("X-Seller-Id", sellerId)
                     .body("""
                             { "title": "Teclado", "amount": "25,00", "currency": "EUR", "stock": 1 }
                             """)
@@ -109,7 +118,6 @@ class ListingValidationTest {
         void rejectsOverlongSlot() {
             given()
                     .contentType(ContentType.JSON)
-                    .header("X-Seller-Id", sellerId)
                     .body("""
                             {
                               "title": "Retiro de una semana",
@@ -128,19 +136,30 @@ class ListingValidationTest {
 
     @Nested
     @DisplayName("cabeceras y parámetros")
+    @TestSecurity(user = "vendedora", roles = "seller")
+    @OidcSecurity(claims = @Claim(key = "sub", value = ListingValidationTest.VENDEDORA))
     class HeadersAndParams {
 
         @Test
-        @DisplayName("rechaza un X-Seller-Id que no es UUID")
-        void rejectsMalformedSellerHeader() {
-            given()
+        @DisplayName("la vieja cabecera X-Seller-Id ya no tiene ningún efecto")
+        void sellerHeaderIsIgnored() {
+            // Hasta el módulo 5 esta cabecera decidía de quién era la publicación, lo que
+            // permitía a cualquiera publicar en nombre de otro. Ahora el vendedor sale del
+            // token y la cabecera es texto decorativo. El test existe para que siga siéndolo:
+            // si alguien la resucitara, el agujero volvería sin que nada más se rompiera.
+            String id = given()
                     .contentType(ContentType.JSON)
-                    .header("X-Seller-Id", "alice")
+                    .header("X-Seller-Id", "99999999-9999-9999-9999-999999999999")
                     .body("""
                             { "title": "Teclado", "amount": "25.00", "currency": "EUR", "stock": 1 }
                             """)
                     .when().post("/listings/products")
-                    .then().statusCode(400);
+                    .then().statusCode(201)
+                    .extract().path("id");
+
+            given().when().get("/listings/{id}", id)
+                    .then().statusCode(200)
+                    .body("sellerId", org.hamcrest.Matchers.equalTo(VENDEDORA));
         }
 
         @Test
@@ -160,6 +179,8 @@ class ListingValidationTest {
 
     @Nested
     @DisplayName("lo que Bean Validation NO puede comprobar")
+    @TestSecurity(user = "vendedora", roles = "seller")
+    @OidcSecurity(claims = @Claim(key = "sub", value = ListingValidationTest.VENDEDORA))
     class BeyondSyntax {
 
         @Test
@@ -169,7 +190,6 @@ class ListingValidationTest {
             // Que no exista en ISO 4217 solo lo sabe Currency.getInstance, al construirla.
             given()
                     .contentType(ContentType.JSON)
-                    .header("X-Seller-Id", sellerId)
                     .body("""
                             { "title": "Teclado", "amount": "25.00", "currency": "XYZ", "stock": 1 }
                             """)
@@ -182,7 +202,6 @@ class ListingValidationTest {
         void wellFormedButUnknownTimeZone() {
             given()
                     .contentType(ContentType.JSON)
-                    .header("X-Seller-Id", sellerId)
                     .body("""
                             {
                               "title": "Clase", "amount": "30.00", "currency": "EUR",
@@ -200,7 +219,6 @@ class ListingValidationTest {
             // Money lo rechaza porque el euro tiene dos decimales y redondear sería mentir.
             given()
                     .contentType(ContentType.JSON)
-                    .header("X-Seller-Id", sellerId)
                     .body("""
                             { "title": "Teclado", "amount": "25.005", "currency": "EUR", "stock": 1 }
                             """)

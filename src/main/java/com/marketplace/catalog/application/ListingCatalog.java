@@ -7,6 +7,7 @@ import com.marketplace.catalog.domain.ListingNotFoundException;
 import com.marketplace.catalog.domain.ListingRepository;
 import com.marketplace.catalog.domain.ListingStatus;
 import com.marketplace.catalog.domain.Listings;
+import com.marketplace.catalog.domain.NotTheOwnerException;
 import com.marketplace.catalog.domain.ProductListing;
 import com.marketplace.catalog.domain.ServiceListing;
 import com.marketplace.shared.domain.Money;
@@ -115,27 +116,42 @@ public class ListingCatalog {
 
     // ------------------------------------------------------- ciclo de vida
 
-    public Listing publish(ListingId id) {
-        return transitionTo(id, ListingStatus.PUBLISHED);
+    public Listing publish(ListingId id, SellerId requester) {
+        return transitionTo(id, ListingStatus.PUBLISHED, requester);
     }
 
-    public Listing pause(ListingId id) {
-        return transitionTo(id, ListingStatus.PAUSED);
+    public Listing pause(ListingId id, SellerId requester) {
+        return transitionTo(id, ListingStatus.PAUSED, requester);
     }
 
-    public Listing archive(ListingId id) {
-        return transitionTo(id, ListingStatus.ARCHIVED);
+    public Listing archive(ListingId id, SellerId requester) {
+        return transitionTo(id, ListingStatus.ARCHIVED, requester);
     }
 
     /**
      * Aplica una transición de estado y la persiste.
      *
      * <p>La validación de si la transición es legal vive en el dominio ({@code withStatus} lanza
-     * al intentar salir de un estado terminal), no aquí. Este método solo coordina: lee, delega
-     * en el dominio y guarda.
+     * al intentar salir de un estado terminal), no aquí. Este método solo coordina: lee, comprueba
+     * la propiedad, delega en el dominio y guarda.
+     *
+     * <p>La comprobación de propiedad está en este método privado, y no repetida en los tres
+     * públicos, a propósito: es el <strong>único</strong> camino por el que se cambia el estado de
+     * una publicación. Añadir mañana una operación nueva —destacar, renovar— obliga a pasar por
+     * aquí, así que nace protegida. Una comprobación copiada tres veces es una comprobación que
+     * alguien olvidará la cuarta.
+     *
+     * <p>El orden importa: primero se resuelve la publicación (404 si no existe) y después la
+     * propiedad (403 si no es tuya). Al revés no se puede, porque hasta no cargarla no se sabe de
+     * quién es.
      */
-    private Listing transitionTo(ListingId id, ListingStatus newStatus) {
-        var updated = byId(id).withStatus(newStatus);
+    private Listing transitionTo(ListingId id, ListingStatus newStatus, SellerId requester) {
+        Objects.requireNonNull(requester, "requester must not be null");
+        var listing = byId(id);
+        if (!listing.sellerId().equals(requester)) {
+            throw new NotTheOwnerException(id, requester);
+        }
+        var updated = listing.withStatus(newStatus);
         repository.save(updated);
         return updated;
     }

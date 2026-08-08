@@ -745,3 +745,141 @@ y poca base de datos: gateways, proxies, streaming, fan-out a muchos servicios. 
 huella de memoria sí importan.
 
 Y en todos los casos: **mide el recurso escaso antes de elegir**. Casi nunca son los hilos.
+
+---
+
+# Módulo 5 — Seguridad
+
+### 5.1 · ¿Qué diferencia hay entre OAuth 2.0, OIDC y JWT? Se usan como sinónimos constantemente
+
+Son tres cosas de niveles distintos, y cada una nació para arreglar una carencia de la anterior.
+
+**OAuth 2.0** resuelve la *autorización delegada*: dar acceso a un tercero sin darle tu
+contraseña. Y no sabe quién eres — un token OAuth dice «el portador puede leer ventas», no «el
+portador es Qohat». Durante años se usó igualmente para login, cada cual a su manera, y salió mal.
+
+**OIDC** es una capa fina sobre OAuth 2.0 que estandariza la identidad: añade el **ID token**, el
+endpoint `/userinfo` y el descubrimiento por `/.well-known/openid-configuration`.
+**OIDC = OAuth 2.0 + identidad estandarizada.**
+
+**JWT** es solo un *formato* de token: tres bloques en base64 con una firma. Puedes hacer OAuth
+sin JWT (tokens opacos que se validan preguntando al emisor) y puedes usar JWT sin OAuth.
+
+La respuesta que remata: **el payload de un JWT no está cifrado, solo codificado.** Cualquiera con
+el token lee sus claims. No es un secreto: es un documento firmado, como un pasaporte.
+
+### 5.2 · Un JWT no se puede revocar. ¿Cómo echas a alguien entonces?
+
+Primero hay que reconocer que la pega es real y que es el precio de la virtud: el servicio valida
+el token **sin preguntar a nadie**, con la clave pública del emisor. Esa autonomía es lo que
+permite escalar a decenas de servicios sin un almacén central de sesiones que consultar en cada
+petición; y es exactamente lo que impide revocar.
+
+Las respuestas, de menos a más caras:
+
+- **Access tokens muy cortos** (el nuestro dura 10 minutos) más un *refresh token* de vida larga
+  que sí es revocable, porque canjearlo obliga a pasar por el emisor.
+- **Lista de revocación** de los `jti` comprometidos, consultada solo en operaciones críticas. Es
+  volver a introducir estado compartido, así que se usa con cuidado.
+- **Introspección** (`token_introspection`): preguntar al emisor por cada petición. Correcto y
+  seguro, pero renuncias a la ventaja que te llevó a JWT.
+
+Lo que se valora es entender que **es un trade-off deliberado, no un descuido del diseño**.
+
+### 5.3 · `@RolesAllowed("seller")` en un endpoint que archiva publicaciones. ¿Es suficiente?
+
+No, y es el fallo de seguridad más común en APIs REST.
+
+Esa anotación comprueba que quien llama es *un* vendedor. No comprueba que sea **el** vendedor de
+esa publicación. Con ese código, cualquier vendedor registrado puede archivar el catálogo de sus
+competidores.
+
+Se llama **BOLA** (*Broken Object Level Authorization*) y es el riesgo **número 1** del OWASP API
+Security Top 10. No lo detecta ninguna herramienta automática, porque desde fuera la petición es
+indistinguible de una legítima: token válido, rol correcto, endpoint correcto.
+
+```
+autenticación             ¿quién eres?                401   ← OIDC
+autorización por rol      ¿qué tipo de usuario eres?  403   ← @RolesAllowed
+autorización por recurso  ¿es TUYO esto?              403   ← nadie te lo da hecho
+```
+
+Dónde ponerlo importa: **en el caso de uso, no en el recurso REST**. Una comprobación en la capa
+HTTP solo protege esa puerta; la misma operación disparada desde un consumidor de Kafka entraría
+por detrás. En el caso de uso vale para todas las entradas y además se testea sin levantar nada.
+
+### 5.4 · ¿403 o 404 cuando alguien intenta modificar un recurso ajeno?
+
+**Depende de si el recurso es público para lectura**, y esa es la respuesta que se busca.
+
+- **403** dice «existe, pero no es tuyo».
+- **404** miente a propósito y no confirma siquiera su existencia.
+
+El 404 es más hermético porque impide **enumerar**: si un atacante distingue 403 de 404, puede
+descubrir qué identificadores existen aunque no pueda tocarlos.
+
+En nuestro catálogo se eligió 403 porque las publicaciones ya son públicas vía `GET
+/listings/{id}`: fingir que no existe no oculta nada que no se compruebe con otra petición, y a
+cambio deja al dueño legítimo con un mensaje incomprensible cuando se equivoca de cuenta. Para los
+pedidos, que sí son privados para leer, la elección correcta será 404.
+
+Y en cualquiera de los dos casos: **al cliente lo justo, al log todo**. El mensaje de error no
+debe repetir el identificador del solicitante.
+
+### 5.5 · Configuras Keycloak, `@RolesAllowed` está puesto, el token trae los roles… y todo da 403
+
+Los roles están en un claim que Quarkus no está leyendo.
+
+Con el scope `microprofile-jwt` llegan en **`groups`**, que es lo que Quarkus entiende de fábrica.
+Un Keycloak configurado por el equipo de plataforma normalmente los pone en
+**`realm_access.roles`**, y entonces la identidad llega **sin ningún rol**: autenticado
+correctamente y rechazado en todas partes.
+
+```properties
+quarkus.oidc.roles.role-claim-path=realm_access/roles
+```
+
+Lo interesante para la entrevista es cómo se diagnostica: decodificar el payload del token
+(`echo $TOKEN | cut -d. -f2 | base64 -d`) y mirar dónde están de verdad los roles, en vez de
+suponerlo.
+
+Y cómo se evita que vuelva a pasar: **un test con un token real**. Con `@TestSecurity`, que
+construye la identidad directamente y se salta la validación, este fallo no aparece nunca — la
+suite entera queda verde y la aplicación rechaza a todos sus usuarios en producción.
+
+### 5.6 · Activas la seguridad y 21 tests que esperaban 400 empiezan a devolver 401. ¿Qué te dice eso?
+
+Que la cadena de control de acceso se evalúa **antes** que la validación del cuerpo:
+
+```
+401 autenticación → 403 rol → 400 validación → 403 propiedad
+```
+
+Y tiene que ser en ese orden. Validar el cuerpo de un anónimo es trabajo regalado a quien no
+debería estar ahí, y los mensajes de validación son un mapa gratis de la API: qué campos existen,
+qué formatos acepta, qué rangos. Si un atacante puede obtenerlos sin autenticarse, le has ahorrado
+la fase de reconocimiento.
+
+Merece la pena fijarlo en un test que mande un cuerpo deliberadamente inválido **sin token** y
+exija 401. Si alguien invierte el orden de los filtros, ese test se pone rojo.
+
+### 5.7 · ¿Cómo testeas seguridad sin que la suite tarde diez minutos?
+
+En tres capas, cada una comprobando lo que las otras no pueden:
+
+| Capa | Cómo autentica | Qué prueba | Coste |
+|---|---|---|---|
+| Dominio | nada | **las reglas de propiedad** | milisegundos |
+| `@TestSecurity` | identidad construida a mano | códigos 401/403/404, qué se filtra | rápido |
+| Token real | Keycloak de Dev Services | **el cableado**: firma, emisor, claim de roles | segundos |
+
+La primera capa es posible porque la comprobación de propiedad vive en el caso de uso: son reglas
+de negocio y se prueban con `new` y assertions, sin contenedor.
+
+La tercera es la que casi nadie escribe y la que evita el desastre. Bastan dos o tres tests: uno
+que compruebe que un token legítimo funciona —que es el que valida firma, emisor y mapeo de
+roles— y otro con la firma manipulada que debe dar 401.
+
+**El error a evitar es quedarse solo en la capa intermedia.** `@TestSecurity` se salta toda la
+validación del token por diseño; si es lo único que tienes, no estás probando tu seguridad, estás
+probando tus anotaciones.

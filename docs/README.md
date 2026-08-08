@@ -32,8 +32,8 @@ usando Java 25 y Quarkus 3.38, hasta llegar a sistemas distribuidos a escala.
 | 2 | REST y ARC | ✅ | [02-rest-y-arc.md](02-rest-y-arc.md) |
 | 3 | Persistencia | ✅ | [03-persistencia.md](03-persistencia.md) |
 | 4 | Concurrencia: bloqueante vs reactivo vs virtual threads | ✅ | [04-concurrencia.md](04-concurrencia.md) |
-| 5 | Seguridad | 🔄 siguiente | — |
-| 6 | Bounded contexts e inventario | ⏳ | — |
+| 5 | Seguridad | ✅ | [05-seguridad.md](05-seguridad.md) |
+| 6 | Bounded contexts e inventario | 🔄 siguiente | — |
 | 7 | Mensajería: Kafka, outbox y saga | ⏳ | — |
 | 8 | Resiliencia y observabilidad | ⏳ | — |
 | 9 | Escala y producción | ⏳ | — |
@@ -57,8 +57,9 @@ transacciones, cómo mapear tipos `sealed` a tablas, paginación.
 14 bugs de concurrencia más comunes y la demostración de que el cuello de botella casi nunca son
 los hilos. Todo reproducible con `./scripts/bench.sh`.
 
-**5 · Seguridad** — OIDC con Keycloak (vía Dev Services), JWT, roles vendedor/comprador,
-autorización a nivel de recurso.
+**5 · Seguridad** — OIDC con Keycloak (vía Dev Services), JWT desmenuzado claim a claim, roles
+vendedor/comprador y **autorización a nivel de recurso**: el fallo BOLA, número 1 del OWASP API
+Security Top 10, que ninguna anotación resuelve. Con tests en tres capas.
 
 **6 · Bounded contexts** — Separar catálogo, inventario, órdenes y pagos. Reserva de stock sin
 sobreventa y reserva de franjas horarias: dos problemas de concurrencia distintos.

@@ -3,6 +3,9 @@ package com.marketplace.catalog.infrastructure.rest;
 import com.marketplace.support.DatabaseCleaner;
 import com.marketplace.shared.domain.SellerId;
 import io.quarkus.test.junit.QuarkusTest;
+import io.quarkus.test.security.TestSecurity;
+import io.quarkus.test.security.oidc.Claim;
+import io.quarkus.test.security.oidc.OidcSecurity;
 import io.restassured.http.ContentType;
 import jakarta.inject.Inject;
 import org.junit.jupiter.api.BeforeEach;
@@ -34,7 +37,19 @@ import static org.hamcrest.Matchers.startsWith;
  */
 @QuarkusTest
 @DisplayName("ListingResource")
+/*
+ * Identidad por defecto de toda la clase. @TestSecurity construye la SecurityIdentity
+ * directamente, sin token ni Keycloak, y @OidcSecurity permite fijar los claims: hace falta
+ * porque el código convierte `sub` en un SellerId y eso exige un UUID.
+ *
+ * Como son anotaciones, el sub tiene que ser una constante de compilación. De ahí que el
+ * vendedor deje de generarse por test.
+ */
+@TestSecurity(user = "vendedora", roles = "seller")
+@OidcSecurity(claims = @Claim(key = "sub", value = ListingResourceTest.VENDEDORA))
 class ListingResourceTest {
+
+    static final String VENDEDORA = "11111111-1111-1111-1111-111111111111";
 
     @Inject
     DatabaseCleaner database;
@@ -44,13 +59,12 @@ class ListingResourceTest {
     @BeforeEach
     void setUp() {
         database.clear();
-        sellerId = SellerId.newId().toString();
+        sellerId = VENDEDORA;
     }
 
     private String createPublishedProduct(String title, int stock) {
         String id = given()
                 .contentType(ContentType.JSON)
-                .header("X-Seller-Id", sellerId)
                 .body("""
                         { "title": "%s", "amount": "25.00", "currency": "EUR", "stock": %d }
                         """.formatted(title, stock))
@@ -64,6 +78,8 @@ class ListingResourceTest {
 
     @Nested
     @DisplayName("creación")
+    @TestSecurity(user = "vendedora", roles = "seller")
+    @OidcSecurity(claims = @Claim(key = "sub", value = ListingResourceTest.VENDEDORA))
     class Creation {
 
         @Test
@@ -71,7 +87,6 @@ class ListingResourceTest {
         void createsProduct() {
             given()
                     .contentType(ContentType.JSON)
-                    .header("X-Seller-Id", sellerId)
                     .body("""
                             {
                               "title": "Teclado mecánico",
@@ -100,7 +115,6 @@ class ListingResourceTest {
         void createsService() {
             given()
                     .contentType(ContentType.JSON)
-                    .header("X-Seller-Id", sellerId)
                     .body("""
                             {
                               "title": "Clase de guitarra",
@@ -119,15 +133,21 @@ class ListingResourceTest {
         }
 
         @Test
-        @DisplayName("sin cabecera X-Seller-Id responde 400")
-        void rejectsMissingSeller() {
-            given()
+        @DisplayName("el vendedor sale del token, no del cuerpo ni de una cabecera")
+        void sellerComesFromTheToken() {
+            String id = given()
                     .contentType(ContentType.JSON)
                     .body("""
                             { "title": "Teclado", "amount": "25.00", "currency": "EUR", "stock": 1 }
                             """)
                     .when().post("/listings/products")
-                    .then().statusCode(400);
+                    .then().statusCode(201)
+                    .extract().path("id");
+
+            // El cuerpo no mencionaba a ningún vendedor: el sub del token es el único origen.
+            given().when().get("/listings/{id}", id)
+                    .then().statusCode(200)
+                    .body("sellerId", equalTo(VENDEDORA));
         }
 
         @Test
@@ -135,7 +155,6 @@ class ListingResourceTest {
         void rejectsUnknownCurrency() {
             given()
                     .contentType(ContentType.JSON)
-                    .header("X-Seller-Id", sellerId)
                     .body("""
                             { "title": "Teclado", "amount": "25.00", "currency": "XYZ", "stock": 1 }
                             """)
@@ -146,6 +165,8 @@ class ListingResourceTest {
 
     @Nested
     @DisplayName("lectura")
+    @TestSecurity(user = "vendedora", roles = "seller")
+    @OidcSecurity(claims = @Claim(key = "sub", value = ListingResourceTest.VENDEDORA))
     class Reading {
 
         @Test
@@ -154,7 +175,7 @@ class ListingResourceTest {
             createPublishedProduct("Publicado", 10);
 
             // Este se queda en borrador: no debe aparecer.
-            given().contentType(ContentType.JSON).header("X-Seller-Id", sellerId)
+            given().contentType(ContentType.JSON)
                     .body("""
                             { "title": "Borrador", "amount": "25.00", "currency": "EUR", "stock": 1 }
                             """)
@@ -175,7 +196,7 @@ class ListingResourceTest {
         @DisplayName("GET /listings?seller= incluye también los borradores del vendedor")
         void sellerViewIncludesDrafts() {
             createPublishedProduct("Publicado", 10);
-            given().contentType(ContentType.JSON).header("X-Seller-Id", sellerId)
+            given().contentType(ContentType.JSON)
                     .body("""
                             { "title": "Borrador", "amount": "25.00", "currency": "EUR", "stock": 1 }
                             """)
@@ -196,6 +217,8 @@ class ListingResourceTest {
 
     @Nested
     @DisplayName("ciclo de vida")
+    @TestSecurity(user = "vendedora", roles = "seller")
+    @OidcSecurity(claims = @Claim(key = "sub", value = ListingResourceTest.VENDEDORA))
     class Lifecycle {
 
         @Test
@@ -216,6 +239,8 @@ class ListingResourceTest {
 
     @Nested
     @DisplayName("disponibilidad")
+    @TestSecurity(user = "vendedora", roles = "seller")
+    @OidcSecurity(claims = @Claim(key = "sub", value = ListingResourceTest.VENDEDORA))
     class Availability {
 
         @Test
@@ -264,6 +289,8 @@ class ListingResourceTest {
 
     @Nested
     @DisplayName("errores")
+    @TestSecurity(user = "vendedora", roles = "seller")
+    @OidcSecurity(claims = @Claim(key = "sub", value = ListingResourceTest.VENDEDORA))
     class ErrorHandling {
 
         @Test
@@ -306,7 +333,6 @@ class ListingResourceTest {
             // Precio cero: el @Pattern lo acepta, pero ProductListing exige precio positivo.
             given()
                     .contentType(ContentType.JSON)
-                    .header("X-Seller-Id", sellerId)
                     .body("""
                             { "title": "Gratis", "amount": "0.00", "currency": "EUR", "stock": 1 }
                             """)
@@ -322,7 +348,6 @@ class ListingResourceTest {
         void validationErrorsShareTheSameFormat() {
             given()
                     .contentType(ContentType.JSON)
-                    .header("X-Seller-Id", sellerId)
                     .body("""
                             { "title": "", "amount": "25.00", "currency": "EUR", "stock": 1 }
                             """)

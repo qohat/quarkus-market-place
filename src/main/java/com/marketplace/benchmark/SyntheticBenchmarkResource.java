@@ -4,6 +4,7 @@ import io.quarkus.arc.profile.IfBuildProfile;
 import io.smallrye.common.annotation.Blocking;
 import io.smallrye.common.annotation.RunOnVirtualThread;
 import io.smallrye.mutiny.Uni;
+import jakarta.annotation.security.PermitAll;
 import jakarta.ws.rs.DefaultValue;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.Path;
@@ -28,6 +29,11 @@ import java.time.Duration;
 @Path("/bench")
 @Produces(MediaType.TEXT_PLAIN)
 @IfBuildProfile("bench")
+// Con deny-unannotated-endpoints activado (módulo 5), todo endpoint sin anotación queda
+// denegado. El laboratorio se declara abierto explícitamente: mide concurrencia, y meter la
+// validación de un token en el camino contaminaría la medición. Puede hacerlo porque solo
+// existe en el perfil bench.
+@PermitAll
 public class SyntheticBenchmarkResource {
 
     /**

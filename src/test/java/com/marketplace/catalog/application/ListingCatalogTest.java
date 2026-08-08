@@ -4,6 +4,7 @@ import com.marketplace.catalog.domain.FulfillmentCheck;
 import com.marketplace.catalog.domain.ListingId;
 import com.marketplace.catalog.domain.ListingNotFoundException;
 import com.marketplace.catalog.domain.ListingStatus;
+import com.marketplace.catalog.domain.NotTheOwnerException;
 import com.marketplace.catalog.infrastructure.InMemoryListingRepository;
 import com.marketplace.shared.domain.Money;
 import com.marketplace.shared.domain.PageRequest;
@@ -88,7 +89,7 @@ class ListingCatalogTest {
         void publishingMakesItVisible() {
             var product = catalog.createProduct(alice, "Teclado", PRICE, 10);
 
-            var published = catalog.publish(product.id());
+            var published = catalog.publish(product.id(), alice);
 
             assertEquals(ListingStatus.PUBLISHED, published.status());
             assertEquals(List.of(published), catalog.browse(PageRequest.first()).items());
@@ -98,9 +99,9 @@ class ListingCatalogTest {
         @DisplayName("pausar la mantiene visible pero deja de admitir pedidos")
         void pausingKeepsItVisible() {
             var product = catalog.createProduct(alice, "Teclado", PRICE, 10);
-            catalog.publish(product.id());
+            catalog.publish(product.id(), alice);
 
-            var paused = catalog.pause(product.id());
+            var paused = catalog.pause(product.id(), alice);
 
             assertEquals(ListingStatus.PAUSED, paused.status());
             assertEquals(1, catalog.browse(PageRequest.first()).items().size());
@@ -113,9 +114,9 @@ class ListingCatalogTest {
         @DisplayName("archivar la retira del catálogo")
         void archivingRemovesItFromBrowse() {
             var product = catalog.createProduct(alice, "Teclado", PRICE, 10);
-            catalog.publish(product.id());
+            catalog.publish(product.id(), alice);
 
-            catalog.archive(product.id());
+            catalog.archive(product.id(), alice);
 
             assertTrue(catalog.browse(PageRequest.first()).items().isEmpty());
         }
@@ -124,9 +125,66 @@ class ListingCatalogTest {
         @DisplayName("la transición ilegal la rechaza el dominio, no el caso de uso")
         void illegalTransitionIsRejectedByTheDomain() {
             var product = catalog.createProduct(alice, "Teclado", PRICE, 10);
-            catalog.archive(product.id());
+            catalog.archive(product.id(), alice);
 
-            assertThrows(IllegalStateException.class, () -> catalog.publish(product.id()));
+            assertThrows(IllegalStateException.class, () -> catalog.publish(product.id(), alice));
+        }
+    }
+
+    /**
+     * El fallo que encabeza el OWASP API Security Top 10: autenticarse correctamente y operar
+     * sobre un recurso ajeno. La comprobación vive en el caso de uso, así que estos tests corren
+     * sin Quarkus, sin token y sin Keycloak: son reglas de negocio, no de transporte.
+     */
+    @Nested
+    @DisplayName("propiedad del recurso")
+    class Ownership {
+
+        @Test
+        @DisplayName("otro vendedor no puede publicar lo que no es suyo")
+        void anotherSellerCannotPublish() {
+            var rival = SellerId.newId();
+            var product = catalog.createProduct(alice, "Teclado", PRICE, 10);
+
+            var exception = assertThrows(
+                    NotTheOwnerException.class, () -> catalog.publish(product.id(), rival));
+
+            assertEquals(product.id(), exception.listingId());
+            assertEquals(rival, exception.requester());
+        }
+
+        @Test
+        @DisplayName("otro vendedor no puede pausar ni archivar lo que no es suyo")
+        void anotherSellerCannotPauseOrArchive() {
+            var rival = SellerId.newId();
+            var product = catalog.createProduct(alice, "Teclado", PRICE, 10);
+            catalog.publish(product.id(), alice);
+
+            assertThrows(NotTheOwnerException.class, () -> catalog.pause(product.id(), rival));
+            assertThrows(NotTheOwnerException.class, () -> catalog.archive(product.id(), rival));
+        }
+
+        @Test
+        @DisplayName("la publicación ajena queda intacta tras el intento")
+        void deniedAttemptLeavesTheListingUntouched() {
+            var rival = SellerId.newId();
+            var product = catalog.createProduct(alice, "Teclado", PRICE, 10);
+            catalog.publish(product.id(), alice);
+
+            assertThrows(NotTheOwnerException.class, () -> catalog.archive(product.id(), rival));
+
+            // Lo importante no es que lance, sino que no haya escrito nada antes de lanzar.
+            assertEquals(ListingStatus.PUBLISHED, catalog.byId(product.id()).status());
+        }
+
+        @Test
+        @DisplayName("una publicación inexistente da 'no existe', no 'no es tuya'")
+        void missingListingReportsNotFoundRatherThanOwnership() {
+            // El orden de las comprobaciones importa: si se resolviera al revés, un atacante
+            // distinguiría los ids que existen de los que no por el tipo de error.
+            assertThrows(
+                    ListingNotFoundException.class,
+                    () -> catalog.archive(ListingId.newId(), SellerId.newId()));
         }
     }
 
@@ -166,7 +224,7 @@ class ListingCatalogTest {
         @DisplayName("calcula el total cuando hay stock suficiente")
         void computesTotalWhenAvailable() {
             var product = catalog.createProduct(alice, "Teclado", PRICE, 10);
-            catalog.publish(product.id());
+            catalog.publish(product.id(), alice);
 
             var result = catalog.checkAvailability(product.id(), 3);
 
@@ -178,7 +236,7 @@ class ListingCatalogTest {
         @DisplayName("informa de cuánto queda cuando no alcanza")
         void reportsAvailabilityWhenInsufficient() {
             var product = catalog.createProduct(alice, "Teclado", PRICE, 2);
-            catalog.publish(product.id());
+            catalog.publish(product.id(), alice);
 
             var result = catalog.checkAvailability(product.id(), 5);
 

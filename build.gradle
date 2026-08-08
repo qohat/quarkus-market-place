@@ -26,6 +26,8 @@ dependencies {
     // datos en desarrollo y en test.
     implementation 'io.quarkus:quarkus-hibernate-orm-panache'
     implementation 'io.quarkus:quarkus-jdbc-postgresql'
+    // Migraciones de esquema versionadas. El esquema deja de deducirse de las entidades.
+    implementation 'io.quarkus:quarkus-flyway'
     testImplementation 'io.quarkus:quarkus-junit'
     testImplementation 'io.rest-assured:rest-assured'
 }

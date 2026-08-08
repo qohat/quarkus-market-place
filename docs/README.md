@@ -31,8 +31,8 @@ usando Java 25 y Quarkus 3.38, hasta llegar a sistemas distribuidos a escala.
 | 1 | Dominio con Java moderno | ✅ | [01-dominio-y-java-moderno.md](01-dominio-y-java-moderno.md) |
 | 2 | REST y ARC | ✅ | [02-rest-y-arc.md](02-rest-y-arc.md) |
 | 3 | Persistencia | ✅ | [03-persistencia.md](03-persistencia.md) |
-| 4 | Concurrencia: bloqueante vs reactivo vs virtual threads | 🔄 siguiente | — |
-| 5 | Seguridad | ⏳ | — |
+| 4 | Concurrencia: bloqueante vs reactivo vs virtual threads | ✅ | [04-concurrencia.md](04-concurrencia.md) |
+| 5 | Seguridad | 🔄 siguiente | — |
 | 6 | Bounded contexts e inventario | ⏳ | — |
 | 7 | Mensajería: Kafka, outbox y saga | ⏳ | — |
 | 8 | Resiliencia y observabilidad | ⏳ | — |
@@ -53,7 +53,9 @@ Bean Validation, manejo de errores, OpenAPI. Los primeros `@QuarkusTest`.
 transacciones, cómo mapear tipos `sealed` a tablas, paginación.
 
 **4 · Concurrencia** — El eje que decide la escalabilidad: event loop, Mutiny (`Uni`/`Multi`),
-`@Blocking`/`@NonBlocking`, `@RunOnVirtualThread`. Con un benchmark real de los tres modelos.
+`@Blocking`/`@NonBlocking`, `@RunOnVirtualThread`. Con un benchmark real de los tres modelos, los
+14 bugs de concurrencia más comunes y la demostración de que el cuello de botella casi nunca son
+los hilos. Todo reproducible con `./scripts/bench.sh`.
 
 **5 · Seguridad** — OIDC con Keycloak (vía Dev Services), JWT, roles vendedor/comprador,
 autorización a nivel de recurso.

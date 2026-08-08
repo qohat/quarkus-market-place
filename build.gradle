@@ -28,6 +28,11 @@ dependencies {
     implementation 'io.quarkus:quarkus-jdbc-postgresql'
     // Migraciones de esquema versionadas. El esquema deja de deducirse de las entidades.
     implementation 'io.quarkus:quarkus-flyway'
+    // Cliente PostgreSQL reactivo (módulo 4). Convive con el driver JDBC pero es una pila
+    // distinta: protocolo no bloqueante sobre el event loop, con su propio pool. Hace falta
+    // porque Hibernate ORM es bloqueante de raíz, así que el modelo reactivo no puede
+    // reutilizar la capa de persistencia que ya tenemos: hay que bajar a SQL.
+    implementation 'io.quarkus:quarkus-reactive-pg-client'
     testImplementation 'io.quarkus:quarkus-junit'
     testImplementation 'io.rest-assured:rest-assured'
 }

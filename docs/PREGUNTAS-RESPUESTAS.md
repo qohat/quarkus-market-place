@@ -600,3 +600,148 @@ rendimiento invisible a un build rojo.
 La variante más robusta del assert no es "exactamente 2 consultas" sino **"el número de consultas
 no cambia con el volumen de datos"**, que es la firma exacta del N+1 y no se rompe al añadir una
 consulta legítima.
+---
+
+# Módulo 4 — Concurrencia
+
+### 4.1 · ¿Qué decide si un endpoint de Quarkus corre en un event loop o en un worker?
+
+**El tipo de retorno**, evaluado en build time. Si devuelve `Uni`, `Multi` o `CompletionStage`,
+Quarkus lo clasifica como no bloqueante y lo ejecuta sobre un event loop; en cualquier otro caso
+lo despacha al pool de workers.
+
+Las anotaciones no añaden comportamiento: **corrigen esa clasificación cuando el tipo de retorno
+miente**. `@Blocking` para «devuelvo `Uni` pero por dentro bloqueo», `@NonBlocking` para el caso
+contrario, `@RunOnVirtualThread` para «soy bloqueante, dame un hilo virtual».
+
+Lo que hay que entender es que **es una promesa tuya y nadie la verifica**. No hay análisis
+estático que compruebe que tu método no bloqueante no bloquea. Si incumples la promesa, el
+framework te cree y el servidor se cae.
+
+Detalle que suele impresionar: la decisión queda materializada en el artefacto como una clase
+generada por método (`...$quarkusrestinvoker$nombre_hash.class`). Se puede comprobar con `unzip`.
+
+### 4.2 · Activas `@RunOnVirtualThread` en toda tu API y el throughput no mejora. ¿Por qué?
+
+Porque los hilos no eran tu recurso escaso. Casi siempre lo es el **pool de conexiones**.
+
+Con 20 conexiones y consultas de 10 ms, la ley de Little fija el techo en `20 / 0,01 = 2.000
+req/s`, y ese techo es el mismo tengas 200 hilos o 200.000 hilos virtuales. Lo medimos: en el
+escenario sintético los virtual threads daban 18.331 req/s frente a 1.896 del bloqueante —10×—;
+con base de datos real y el mismo tamaño de pool, **1.443 frente a 1.381: idénticos**.
+
+Los virtual threads no regalan capacidad de base de datos. Lo que cambian es **dónde se hace la
+cola**, y eso tiene un lado oscuro: con 200 hilos, la petición 201 se rechaza rápido; con hilos
+virtuales, la 20.001 se acepta y espera. Mismo throughput, p99 disparada, y el cliente ya se ha
+rendido cuando le respondes. Es el argumento a favor del **control de admisión**.
+
+### 4.3 · Un endpoint tiene una p99 de 5 segundos. Revisas su código y es impecable. ¿Qué buscas?
+
+**Otro endpoint que esté bloqueando el event loop.** El culpable y la víctima son código distinto.
+
+Los event loops (`2 × núcleos`) son compartidos por toda la aplicación: aceptan conexiones, leen
+sockets y escriben respuestas de *todos* los endpoints. Si un método mal marcado hace un
+`Thread.sleep`, una llamada JDBC o un `future.get()` sobre un event loop, ese loop deja de
+atender a todo el mundo mientras tanto.
+
+Lo medimos: cargando un endpoint que bloqueaba, otro perfectamente escrito pasó de **968 req/s y
+p99 de 109 ms** a **19,7 req/s y p99 de 5.287 ms** — 49× peor, sin tocar una línea de su código.
+
+Dónde mirar:
+- El aviso `Thread ... has been blocked for N ms` de Vert.x, que da clase y línea. Pero **solo
+  salta a partir de 2 s**: un bloqueo de 100 ms es igual de letal bajo carga y nunca lo dispara.
+- Cualquier método que devuelva `Uni`/`Multi` y por dentro llame a JDBC, a un cliente REST
+  síncrono o a `.get()` sobre un future.
+
+Señal de diagnóstico: **la CPU está ociosa** mientras el servidor no responde. Hilos durmiendo,
+no calculando.
+
+### 4.4 · ¿Cómo puede ser que marcar un endpoint como `@Blocking` lo haga 16 veces más rápido?
+
+Porque `@Blocking` no cambia el trabajo: cambia **dónde se hace la cola**.
+
+Sin la anotación, un método que devuelve `Uni` y bloquea se ejecuta sobre los event loops, que
+son `2 × núcleos` — 24 en la máquina donde medimos. Con `@Blocking` pasa al pool de workers, que
+son 200. El recurso escaso se multiplica por ocho.
+
+Medido: `/lie` sin la anotación daba **115 req/s con p99 de 3.318 ms**; con `@Blocking`, **1.919
+req/s con p99 de 110 ms**.
+
+La lección general es que «bloqueante» no significa «lento». Significa «retiene un hilo». Retener
+uno de 200 workers es el uso previsto; retener uno de 24 event loops es una catástrofe.
+
+### 4.5 · ¿Qué hace a Hibernate ORM incompatible con el modelo reactivo?
+
+Dos cosas, y la primera no es culpa suya.
+
+**1. JDBC es bloqueante por firma, no por implementación.**
+
+```java
+public abstract boolean execute(String) throws SQLException;   // java.sql.Statement
+public abstract Future<T> execute(Tuple);                      // io.vertx.sqlclient.PreparedQuery
+```
+
+`boolean` no admite un «todavía no»; `Future<T>` sí. Con la primera firma, la única implementación
+posible es esperar. En pgjdbc el bloqueo acaba en
+`VisibleBufferedInputStream.readMore()` → `wrapped.read(...)`, una syscall `recv()` sobre un
+`java.net.Socket` bloqueante. Por eso no existe un «JDBC reactivo»: Vert.x no envuelve JDBC, lo
+descarta y reimplementa el protocolo wire de PostgreSQL sobre Netty.
+
+**2. El lazy loading dispara I/O desde un getter.**
+
+```java
+listing.getSeller().getName();   // ¿esto va a la base de datos? depende del estado de la sesión
+```
+
+Para hacerlo reactivo, cada acceso a un campo tendría que devolver `Uni<String>`, lo que destruye
+el modelo de objetos. Añade que la `Session` es *stateful* y no thread-safe, y que
+`@Transactional` vive en un `ThreadLocal` que no sobrevive a un salto de hilo.
+
+Por eso **Hibernate Reactive es un proyecto aparte**, con `Uni` en todas las firmas y sin lazy
+loading implícito.
+
+**El cierre que demuestra que entiendes Loom:** los virtual threads **sí** funcionan con JDBC,
+porque desde Java 21 los sockets del JDK están adaptados y la JVM aparca el hilo virtual en vez
+de dormir el del SO. Es el argumento más fuerte a favor de Loom: escalado sin tirar tu capa de
+persistencia.
+
+### 4.6 · Tu servicio está saturado, la CPU al 10 % y devuelve 0 errores. ¿Qué está pasando?
+
+Está encolando. Es el modo de fallo más peligroso que existe, porque **no parece un fallo**.
+
+Con 200 workers y 100 ms por petición, el techo es 2.000 req/s. Si llegan 2.000 peticiones
+concurrentes, el throughput se queda clavado y todo el exceso se convierte en latencia. Medido:
+el mismo endpoint pasó de p50 = 107 ms con 50 clientes a **p50 = 1.048 ms con 2.000**, sin un
+solo error y con el throughput sin moverse (1.887 → 1.896).
+
+La CPU está baja porque nadie calcula nada: los hilos duermen esperando I/O.
+
+La comprobación es la ley de Little, `W = L / λ`: con 2.000 en vuelo y 1.896 req/s salen 1.055 ms
+de latencia predicha, frente a 1.048 medidos. **Menos del 1 % de error.**
+
+Por eso un panel basado en tasa de errores y CPU declara «sano» un servicio inutilizable, y por
+eso la métrica que manda es la **p99**. Y por eso conviene **rechazar rápido** cuando la cola
+crece: un 503 inmediato es mejor servicio que un 200 a los cinco segundos.
+
+### 4.7 · Empiezas un servicio nuevo en Java 25. ¿Bloqueante, virtual threads o reactivo?
+
+**Virtual threads**, salvo motivo concreto en contra.
+
+El razonamiento con datos:
+
+- **Por debajo de la saturación los tres modelos son indistinguibles** (467 / 454 / 486 req/s con
+  50 clientes). Si no vas a saturar, elegir reactivo es pagar complejidad por nada.
+- **En saturación, virtual y reactivo empatan**: 18.331 frente a 19.287, un 5 % de diferencia.
+  Ese 5 % se paga con stack traces inservibles, `Uni<>` propagándose por todas las firmas,
+  `@Transactional` que deja de valer y una capa de persistencia distinta.
+- **Con base de datos detrás, los tres empatan** (1.381 / 1.443 / 1.366). Que es el caso de casi
+  cualquier servicio de negocio.
+
+Virtual threads dan el escalado del reactivo con el modelo de programación del bloqueante, y
+desde **JEP 491 en Java 24** ya no sufren el *pinning* por `synchronized` que los lastraba.
+
+Reactivo sigue justificándose cuando el trabajo es de verdad I/O puro con muchísima concurrencia
+y poca base de datos: gateways, proxies, streaming, fan-out a muchos servicios. Ahí el 5 % y la
+huella de memoria sí importan.
+
+Y en todos los casos: **mide el recurso escaso antes de elegir**. Casi nunca son los hilos.

@@ -1,8 +1,9 @@
 package com.marketplace.catalog.domain;
 
+import com.marketplace.shared.domain.Page;
+import com.marketplace.shared.domain.PageRequest;
 import com.marketplace.shared.domain.SellerId;
 
-import java.util.List;
 import java.util.Optional;
 
 /**
@@ -25,11 +26,17 @@ public interface ListingRepository {
 
     Optional<Listing> findById(ListingId id);
 
-    /** Todas las publicaciones de un vendedor, incluidos borradores. Es su panel de gestión. */
-    List<Listing> findBySeller(SellerId sellerId);
+    /**
+     * Publicaciones de un vendedor, incluidos borradores. Es su panel de gestión.
+     *
+     * <p>Solo existe la versión paginada, a propósito. Un {@code findAll()} sin límite es una
+     * bomba de relojería: funciona perfectamente durante meses y revienta el día que un vendedor
+     * acumula cien mil publicaciones. Si el método no existe, nadie puede llamarlo por descuido.
+     */
+    Page<Listing> findBySeller(SellerId sellerId, PageRequest pageRequest);
 
     /** Las publicaciones que un comprador puede ver en el catálogo público. */
-    List<Listing> findVisible();
+    Page<Listing> findVisible(PageRequest pageRequest);
 
     /** @return {@code true} si existía y se borró. */
     boolean deleteById(ListingId id);

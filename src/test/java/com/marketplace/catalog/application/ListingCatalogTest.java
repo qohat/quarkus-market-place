@@ -6,6 +6,7 @@ import com.marketplace.catalog.domain.ListingNotFoundException;
 import com.marketplace.catalog.domain.ListingStatus;
 import com.marketplace.catalog.infrastructure.InMemoryListingRepository;
 import com.marketplace.shared.domain.Money;
+import com.marketplace.shared.domain.PageRequest;
 import com.marketplace.shared.domain.SellerId;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -54,7 +55,7 @@ class ListingCatalogTest {
 
             assertEquals(ListingStatus.DRAFT, product.status());
             assertEquals(10, product.availableStock());
-            assertTrue(catalog.browse().isEmpty(), "un borrador no debe aparecer en el catálogo");
+            assertTrue(catalog.browse(PageRequest.first()).items().isEmpty(), "un borrador no debe aparecer en el catálogo");
         }
 
         @Test
@@ -90,7 +91,7 @@ class ListingCatalogTest {
             var published = catalog.publish(product.id());
 
             assertEquals(ListingStatus.PUBLISHED, published.status());
-            assertEquals(List.of(published), catalog.browse());
+            assertEquals(List.of(published), catalog.browse(PageRequest.first()).items());
         }
 
         @Test
@@ -102,7 +103,7 @@ class ListingCatalogTest {
             var paused = catalog.pause(product.id());
 
             assertEquals(ListingStatus.PAUSED, paused.status());
-            assertEquals(1, catalog.browse().size());
+            assertEquals(1, catalog.browse(PageRequest.first()).items().size());
             assertInstanceOf(
                     FulfillmentCheck.NotAcceptingOrders.class,
                     catalog.checkAvailability(product.id(), 1));
@@ -116,7 +117,7 @@ class ListingCatalogTest {
 
             catalog.archive(product.id());
 
-            assertTrue(catalog.browse().isEmpty());
+            assertTrue(catalog.browse(PageRequest.first()).items().isEmpty());
         }
 
         @Test
@@ -151,9 +152,9 @@ class ListingCatalogTest {
             catalog.createProduct(alice, "Ratón", PRICE, 1);
             catalog.createProduct(bob, "Monitor", PRICE, 1);
 
-            assertEquals(2, catalog.ownedBy(alice).size());
-            assertEquals(1, catalog.ownedBy(bob).size());
-            assertTrue(catalog.browse().isEmpty(), "ninguna está publicada todavía");
+            assertEquals(2, catalog.ownedBy(alice, PageRequest.first()).items().size());
+            assertEquals(1, catalog.ownedBy(bob, PageRequest.first()).items().size());
+            assertTrue(catalog.browse(PageRequest.first()).items().isEmpty(), "ninguna está publicada todavía");
         }
     }
 

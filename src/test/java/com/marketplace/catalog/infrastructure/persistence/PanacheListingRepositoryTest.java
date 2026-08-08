@@ -6,6 +6,7 @@ import com.marketplace.catalog.domain.ListingStatus;
 import com.marketplace.catalog.domain.ProductListing;
 import com.marketplace.catalog.domain.ServiceListing;
 import com.marketplace.shared.domain.Money;
+import com.marketplace.shared.domain.PageRequest;
 import com.marketplace.shared.domain.SellerId;
 import io.quarkus.test.TestTransaction;
 import io.quarkus.test.junit.QuarkusTest;
@@ -178,7 +179,7 @@ class PanacheListingRepositoryTest {
                     .withStatus(ListingStatus.ARCHIVED));
             entityManager.flush();
 
-            var visibles = repository.findVisible().stream().map(l -> l.title()).toList();
+            var visibles = repository.findVisible(PageRequest.first()).items().stream().map(l -> l.title()).toList();
 
             // Ordenado por la base de datos, no en Java.
             assertEquals(List.of("Pausado", "Publicado"), visibles);
@@ -197,8 +198,8 @@ class PanacheListingRepositoryTest {
 
             assertEquals(
                     List.of("Ratón", "Teclado"),
-                    repository.findBySeller(alice).stream().map(l -> l.title()).toList());
-            assertEquals(1, repository.findBySeller(bob).size());
+                    repository.findBySeller(alice, PageRequest.first()).items().stream().map(l -> l.title()).toList());
+            assertEquals(1, repository.findBySeller(bob, PageRequest.first()).items().size());
         }
 
         @Test

@@ -4,7 +4,10 @@ import com.marketplace.catalog.domain.Listing;
 import com.marketplace.catalog.domain.ListingId;
 import com.marketplace.catalog.domain.ListingRepository;
 import com.marketplace.catalog.domain.ListingStatus;
+import com.marketplace.shared.domain.Page;
+import com.marketplace.shared.domain.PageRequest;
 import com.marketplace.shared.domain.SellerId;
+import io.quarkus.hibernate.orm.panache.PanacheQuery;
 import io.quarkus.hibernate.orm.panache.PanacheRepositoryBase;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.persistence.EntityManager;
@@ -37,6 +40,21 @@ public class PanacheListingRepository
     /** Los estados que un comprador puede ver en el catálogo. */
     private static final List<ListingStatus> VISIBLE =
             List.of(ListingStatus.PUBLISHED, ListingStatus.PAUSED);
+
+    /**
+     * Orden <strong>total</strong>: título y, para desempatar, el id.
+     *
+     * <p>El desempate no es un detalle estético, es lo que hace correcta la paginación. Con
+     * {@code order by title} a secas, dos publicaciones tituladas "Teclado" quedan en un orden
+     * que PostgreSQL no garantiza y puede cambiar entre consultas. Consecuencia: al pedir la
+     * página 2, un elemento que estaba en la 1 puede reaparecer y otro desaparecer sin haber
+     * cambiado nada.
+     *
+     * <p>Es un bug clásico, difícil de reproducir y que solo se manifiesta con datos reales.
+     * <strong>Toda consulta paginada necesita un orden total</strong>, y la forma más simple de
+     * garantizarlo es añadir la clave primaria como último criterio.
+     */
+    private static final String STABLE_ORDER = " order by title, id";
 
     /** Solo lo necesita {@link #count()}; ver allí el porqué. */
     private final EntityManager entityManager;
@@ -75,27 +93,52 @@ public class PanacheListingRepository
     /**
      * Publicaciones de un vendedor, incluidos borradores y archivadas.
      *
-     * <p>El {@code order by} va en la consulta, no en un {@code sorted()} de Java. La diferencia
-     * importa: ordenar en la base de datos aprovecha el índice
-     * {@code listing_seller_idx (seller_id, title)} y no necesita traerse las filas antes de
-     * decidir el orden. En cuanto haya paginación, ordenar en memoria es directamente incorrecto:
-     * ordenarías solo la página, no el conjunto.
+     * <p>El {@code order by} va en la consulta, no en un {@code sorted()} de Java. Con paginación
+     * la diferencia deja de ser una optimización y pasa a ser una cuestión de corrección:
+     * ordenar en memoria ordenaría <em>solo la página recibida</em>, no el conjunto, así que el
+     * orden global sería aleatorio. Además, ordenar en la base de datos aprovecha el índice
+     * {@code listing_seller_idx (seller_id, title)}.
      */
     @Override
-    public List<Listing> findBySeller(SellerId sellerId) {
+    public Page<Listing> findBySeller(SellerId sellerId, PageRequest pageRequest) {
         Objects.requireNonNull(sellerId, "sellerId must not be null");
+        Objects.requireNonNull(pageRequest, "pageRequest must not be null");
 
-        return list("sellerId = ?1 order by title", sellerId.value()).stream()
-                .map(ListingEntity::toDomain)
-                .toList();
+        return paginate(find("sellerId = ?1" + STABLE_ORDER, sellerId.value()), pageRequest);
     }
 
     /** El catálogo público. Se apoya en el índice parcial {@code listing_visible_idx}. */
     @Override
-    public List<Listing> findVisible() {
-        return list("status in ?1 order by title", VISIBLE).stream()
+    public Page<Listing> findVisible(PageRequest pageRequest) {
+        Objects.requireNonNull(pageRequest, "pageRequest must not be null");
+
+        return paginate(find("status in ?1" + STABLE_ORDER, VISIBLE), pageRequest);
+    }
+
+    /**
+     * Ejecuta la consulta paginada y su recuento.
+     *
+     * <p>Son <strong>dos</strong> viajes a la base de datos: uno para las filas de la página y
+     * otro para el total. No hay forma de evitarlo si quieres dar {@code totalPages}, y ese es
+     * justo el argumento de la paginación por keyset, que renuncia al total a cambio de una sola
+     * consulta.
+     *
+     * <p>El {@code count} se pide primero para poder ahorrarse la segunda consulta cuando no hay
+     * nada que traer.
+     */
+    private Page<Listing> paginate(PanacheQuery<ListingEntity> query, PageRequest pageRequest) {
+        long total = query.count();
+        if (total == 0) {
+            return Page.empty(pageRequest);
+        }
+
+        List<Listing> items = query
+                .page(pageRequest.page(), pageRequest.size())
+                .list().stream()
                 .map(ListingEntity::toDomain)
                 .toList();
+
+        return new Page<>(items, pageRequest.page(), pageRequest.size(), total);
     }
 
     @Override

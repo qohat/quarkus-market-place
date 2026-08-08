@@ -4,11 +4,16 @@ import com.marketplace.catalog.application.ListingCatalog;
 import com.marketplace.catalog.domain.Listing;
 import com.marketplace.catalog.domain.ListingId;
 import com.marketplace.shared.domain.Money;
+import com.marketplace.shared.domain.Page;
+import com.marketplace.shared.domain.PageRequest;
 import com.marketplace.shared.domain.SellerId;
+import com.marketplace.shared.infrastructure.rest.PageResponse;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Positive;
+import jakarta.validation.constraints.PositiveOrZero;
 import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.DefaultValue;
 import jakarta.ws.rs.GET;
@@ -75,17 +80,44 @@ public class ListingResource {
     /**
      * Catálogo público, o el panel de un vendedor si se pasa {@code ?seller=}.
      *
-     * <p>Devolver {@code List<ListingResponse>} directamente, en lugar de envolverlo en un
-     * {@code Response}, deja que Quarkus REST resuelva el 200 y la serialización. Se usa
-     * {@code Response} solo cuando hay que controlar el código de estado o las cabeceras.
+     * <p>Devolver el DTO directamente, en lugar de envolverlo en un {@code Response}, deja que
+     * Quarkus REST resuelva el 200 y la serialización. Se usa {@code Response} solo cuando hay
+     * que controlar el código de estado o las cabeceras.
+     *
+     * <p>Los parámetros de paginación tienen <strong>valores por defecto</strong>: un cliente que
+     * no sepa nada de páginas recibe las primeras 20 y no se lleva la base de datos entera. El
+     * comportamiento seguro es el que se obtiene sin hacer nada, que es como deben diseñarse los
+     * valores por defecto.
      */
     @GET
-    public List<ListingResponse> list(@QueryParam("seller") String sellerId) {
-        List<Listing> listings = (sellerId == null || sellerId.isBlank())
-                ? catalog.browse()
-                : catalog.ownedBy(parseSellerId(sellerId));
+    public PageResponse<ListingResponse> list(
+            @QueryParam("seller") String sellerId,
 
-        return listings.stream().map(ListingResponse::from).toList();
+            @QueryParam("page") @DefaultValue("0")
+            @PositiveOrZero(message = "page cannot be negative")
+            int page,
+
+            /*
+             * El máximo se valida DOS veces: aquí con @Max, para que un size excesivo devuelva un
+             * 400 claro con el resto de errores de validación, y otra vez dentro de PageRequest,
+             * que es quien de verdad garantiza el invariante para cualquier otro camino de
+             * entrada (Kafka, un job programado, otro endpoint futuro).
+             *
+             * No es duplicar una regla de negocio: es que el borde da un buen mensaje y el
+             * dominio da la garantía.
+             */
+            @QueryParam("size") @DefaultValue("20")
+            @Positive(message = "size must be greater than zero")
+            @Max(value = PageRequest.MAX_SIZE, message = "size cannot exceed 100")
+            int size) {
+
+        var pageRequest = PageRequest.of(page, size);
+
+        Page<Listing> resultado = (sellerId == null || sellerId.isBlank())
+                ? catalog.browse(pageRequest)
+                : catalog.ownedBy(parseSellerId(sellerId), pageRequest);
+
+        return PageResponse.from(resultado, ListingResponse::from);
     }
 
     @GET

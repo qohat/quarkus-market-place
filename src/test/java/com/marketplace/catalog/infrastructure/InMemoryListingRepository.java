@@ -3,6 +3,8 @@ package com.marketplace.catalog.infrastructure;
 import com.marketplace.catalog.domain.Listing;
 import com.marketplace.catalog.domain.ListingId;
 import com.marketplace.catalog.domain.ListingRepository;
+import com.marketplace.shared.domain.Page;
+import com.marketplace.shared.domain.PageRequest;
 import com.marketplace.shared.domain.SellerId;
 
 import java.util.Comparator;
@@ -10,6 +12,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.Predicate;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -51,20 +54,39 @@ public class InMemoryListingRepository implements ListingRepository {
     }
 
     @Override
-    public List<Listing> findBySeller(SellerId sellerId) {
+    public Page<Listing> findBySeller(SellerId sellerId, PageRequest pageRequest) {
         Objects.requireNonNull(sellerId, "sellerId must not be null");
-        return store.values().stream()
-                .filter(listing -> listing.sellerId().equals(sellerId))
-                .sorted(Comparator.comparing(Listing::title))
-                .toList();
+        return paginate(
+                listing -> listing.sellerId().equals(sellerId), pageRequest);
     }
 
     @Override
-    public List<Listing> findVisible() {
-        return store.values().stream()
-                .filter(Listing::isVisibleToBuyers)
-                .sorted(Comparator.comparing(Listing::title))
+    public Page<Listing> findVisible(PageRequest pageRequest) {
+        return paginate(Listing::isVisibleToBuyers, pageRequest);
+    }
+
+    /**
+     * Reproduce la semántica del adaptador real: mismo orden total (título, luego id) y los
+     * mismos metadatos de página.
+     *
+     * <p>Que el doble de test replique el orden importa: si aquí ordenara distinto que
+     * PostgreSQL, los tests unitarios pasarían y la aplicación real devolvería otra cosa.
+     */
+    private Page<Listing> paginate(Predicate<Listing> criterio, PageRequest pageRequest) {
+        Objects.requireNonNull(pageRequest, "pageRequest must not be null");
+
+        List<Listing> coincidencias = store.values().stream()
+                .filter(criterio)
+                .sorted(Comparator.comparing(Listing::title)
+                        .thenComparing(listing -> listing.id().value()))
                 .toList();
+
+        List<Listing> pagina = coincidencias.stream()
+                .skip(pageRequest.offset())
+                .limit(pageRequest.size())
+                .toList();
+
+        return new Page<>(pagina, pageRequest.page(), pageRequest.size(), coincidencias.size());
     }
 
     @Override

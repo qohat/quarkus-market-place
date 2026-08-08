@@ -10,13 +10,14 @@ import com.marketplace.catalog.domain.Listings;
 import com.marketplace.catalog.domain.ProductListing;
 import com.marketplace.catalog.domain.ServiceListing;
 import com.marketplace.shared.domain.Money;
+import com.marketplace.shared.domain.Page;
+import com.marketplace.shared.domain.PageRequest;
 import com.marketplace.shared.domain.SellerId;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.transaction.Transactional;
 
 import java.time.Duration;
 import java.time.ZoneId;
-import java.util.List;
 import java.util.Objects;
 
 /**
@@ -102,14 +103,14 @@ public class ListingCatalog {
     }
 
     /** El catálogo público: lo que ve un comprador. */
-    public List<Listing> browse() {
-        return repository.findVisible();
+    public Page<Listing> browse(PageRequest pageRequest) {
+        return repository.findVisible(pageRequest);
     }
 
     /** El panel de un vendedor: incluye sus borradores y archivadas. */
-    public List<Listing> ownedBy(SellerId sellerId) {
+    public Page<Listing> ownedBy(SellerId sellerId, PageRequest pageRequest) {
         Objects.requireNonNull(sellerId, "sellerId must not be null");
-        return repository.findBySeller(sellerId);
+        return repository.findBySeller(sellerId, pageRequest);
     }
 
     // ------------------------------------------------------- ciclo de vida

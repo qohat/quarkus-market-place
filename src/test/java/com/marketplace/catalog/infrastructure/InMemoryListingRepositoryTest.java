@@ -4,6 +4,7 @@ import com.marketplace.catalog.domain.ListingId;
 import com.marketplace.catalog.domain.ListingStatus;
 import com.marketplace.catalog.domain.ProductListing;
 import com.marketplace.shared.domain.Money;
+import com.marketplace.shared.domain.PageRequest;
 import com.marketplace.shared.domain.SellerId;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -79,7 +80,7 @@ class InMemoryListingRepositoryTest {
         repository.save(ProductListing.draft(alice, "Ratón", PRICE, 1));
         repository.save(ProductListing.draft(bob, "Monitor", PRICE, 1));
 
-        var deAlice = repository.findBySeller(alice);
+        var deAlice = repository.findBySeller(alice, PageRequest.first()).items();
 
         assertEquals(2, deAlice.size());
         assertEquals(List.of("Ratón", "Teclado"), deAlice.stream().map(l -> l.title()).toList());
@@ -104,7 +105,7 @@ class InMemoryListingRepositoryTest {
         // PAUSED sigue siendo visible: el comprador la ve, pero no puede comprarla.
         assertEquals(
                 List.of("Pausada", "Publicada"),
-                repository.findVisible().stream().map(l -> l.title()).toList());
+                repository.findVisible(PageRequest.first()).items().stream().map(l -> l.title()).toList());
     }
 
     @Test

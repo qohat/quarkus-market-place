@@ -164,8 +164,11 @@ class ListingResourceTest {
                     .when().get("/listings")
                     .then()
                     .statusCode(200)
-                    .body("$", hasSize(1))
-                    .body("[0].title", equalTo("Publicado"));
+                    .body("items", hasSize(1))
+                    .body("items[0].title", equalTo("Publicado"))
+                    .body("totalItems", equalTo(1))
+                    .body("page", equalTo(0))
+                    .body("hasNext", equalTo(false));
         }
 
         @Test
@@ -181,7 +184,7 @@ class ListingResourceTest {
             given()
                     .queryParam("seller", sellerId)
                     .when().get("/listings")
-                    .then().statusCode(200).body("$", hasSize(2));
+                    .then().statusCode(200).body("items", hasSize(2)).body("totalItems", equalTo(2));
         }
 
         @Test
@@ -207,7 +210,7 @@ class ListingResourceTest {
                     .then().statusCode(200).body("status", equalTo("ARCHIVED"));
 
             // Archivada: deja de aparecer en el catálogo público.
-            given().when().get("/listings").then().body("$", hasSize(0));
+            given().when().get("/listings").then().body("items", hasSize(0)).body("totalItems", equalTo(0));
         }
     }
 

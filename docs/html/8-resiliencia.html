@@ -1,0 +1,513 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Resiliencia y observabilidad — circuit breaker, DLQ y cardinalidad</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="wrap">
+
+<nav class="topnav">
+  <div class="crumbs"><a href="index.html">Quarkus a alta escala</a> <span>/</span> <span>Módulo 8</span></div>
+  <a href="bugs.html">Catálogo de fallos →</a>
+</nav>
+
+<header>
+  <p class="eyebrow">Módulo 8 · resiliencia y observabilidad</p>
+  <h1>Un servicio lento es peor que uno caído</h1>
+  <p class="lede">
+    El caído te falla rápido y sigues con tu vida. El lento retiene tus hilos y tus conexiones
+    hasta arrastrarte con él.
+  </p>
+</header>
+
+<section>
+  <div class="prose stack">
+    <h2>La pregunta que decide toda política de reintentos</h2>
+    <p class="thesis">Ante cada fallo: <strong>¿tiene sentido volver a intentarlo?</strong></p>
+  </div>
+
+  <div class="tablewrap">
+    <table>
+      <tr><th></th><th>Ejemplo</th><th>¿Reintentar?</th></tr>
+      <tr><td><strong>Transitorio</strong></td><td>Timeout, 503, conexión rechazada</td><td><strong>Sí</strong> — la próxima vez puede funcionar</td></tr>
+      <tr><td><strong>Permanente</strong></td><td>Pago rechazado, 400, validación</td><td><strong>No</strong> — fallará igual las veces que quieras</td></tr>
+    </table>
+  </div>
+
+  <p class="warn">
+    Reintentar un rechazo de pago no solo es inútil: <strong>gasta cuota en la pasarela y puede
+    disparar sus controles antifraude</strong>. Es de los errores que se pagan en dinero.
+  </p>
+
+  <div class="sim">
+    <div class="sim-head">
+      <div class="ctl">
+        <button id="rt-transient">Fallo TÉCNICO</button>
+        <button id="rt-decline">Pago RECHAZADO</button>
+      </div>
+    </div>
+    <div id="rt-view" style="display:flex;flex-direction:column;gap:0.4rem"></div>
+    <div id="rt-status" class="status">Elige un tipo de fallo y cuenta los intentos que llegan a la pasarela.</div>
+  </div>
+
+<pre class="good"><span class="kw">@Retry</span>(maxRetries = 3, delay = 200, <mark>jitter = 100</mark>,
+       retryOn = PaymentGatewayUnavailableException.class,
+       <mark>abortOn = PaymentDeclinedException.class</mark>)</pre>
+
+  <p class="note">
+    Dos detalles que se confunden siempre: <strong><code>maxRetries = 3</code> son 4 llamadas</strong>
+    (una inicial más tres reintentos), y <strong>sin <code>jitter</code></strong> todos los clientes
+    reintentan a la vez y crean picos sincronizados que rematan al servicio justo cuando intentaba
+    recuperarse — el rebaño atronador.
+  </p>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>El circuit breaker, en vivo</h2>
+    <p>Machaca la pasarela y observa cuándo deja de recibir llamadas.</p>
+  </div>
+
+  <div class="sim">
+    <div class="sim-head">
+      <div class="ctl">
+        <button id="cb-call">Llamar (la pasarela está caída)</button>
+        <button id="cb-heal">Curar la pasarela</button>
+        <button class="alt" id="cb-reset">Reiniciar</button>
+      </div>
+    </div>
+    <div style="display:flex;gap:1rem;align-items:center;flex-wrap:wrap">
+      <div id="cb-state" style="font-family:var(--sans);font-weight:800;font-size:1.6rem;letter-spacing:-0.02em">CLOSED</div>
+      <div id="cb-window" style="display:flex;gap:0.25rem"></div>
+    </div>
+    <div class="metrics">
+      <div class="metric"><span class="n" id="cb-calls">0</span><span class="l">llamadas recibidas</span></div>
+      <div class="metric"><span class="n" id="cb-gateway">0</span><span class="l">llegan a la pasarela</span></div>
+      <div class="metric hl"><span class="n" id="cb-saved">0</span><span class="l">cortadas al instante</span></div>
+    </div>
+    <div id="cb-status" class="status">Circuito cerrado: todo pasa.</div>
+  </div>
+
+  <p class="thesis">
+    El circuit breaker <strong>no protege al servicio caído: te protege a ti.</strong> Evita que te
+    caigas esperando a alguien que ya está muerto.
+  </p>
+
+  <div class="metrics">
+    <div class="metric"><span class="n">&lt;100 ms</span><span class="l">falla el circuito abierto</span></div>
+    <div class="metric"><span class="n">0</span><span class="l">llamadas a la pasarela</span></div>
+    <div class="metric"><span class="n">2 s × 4</span><span class="l">lo que costaría sin él</span></div>
+  </div>
+
+  <p class="warn">
+    Y <code>skipOn</code> es imprescindible: sin él, <strong>una racha de compradores sin fondos
+    abriría el circuito e impediría cobrar a quien sí tiene dinero</strong>. El circuito debe contar
+    fallos de infraestructura, jamás resultados de negocio.
+  </p>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>El orden de los interceptores, que no es negociable</h2>
+  </div>
+
+<pre>Fallback  &gt;  <mark>Retry</mark>  &gt;  <mark>CircuitBreaker</mark>  &gt;  Timeout  &gt;  Bulkhead</pre>
+
+  <div class="cards">
+    <div class="card good">
+      <h3>Retry envuelve a CircuitBreaker</h3>
+      <p>
+        Cada reintento pasa por el circuito, así que en cuanto abre, los reintentos
+        <strong>dejan de llegar</strong>. Es lo que impide que los dos patrones se peleen.
+      </p>
+    </div>
+    <div class="card bad">
+      <h3>Con el orden contrario</h3>
+      <p>
+        El reintento sería el <strong>acelerante del incendio</strong>: con 3 reintentos, 1 000
+        clientes hacen 3 000 llamadas a algo que se está cayendo.
+      </p>
+    </div>
+  </div>
+
+  <p class="note">
+    Y el corolario que casi nadie tiene presente: <strong>Timeout está por dentro de Retry, así que
+    el límite es por intento, no total.</strong> Tres intentos de 2 segundos pueden tardar 6, y el
+    cliente espera el triple de lo que su autor creía.
+  </p>
+
+  <div class="bug">
+    <h3>El test rojo que describía mal el problema</h3>
+    <p class="sym">expected: &lt;4&gt; but was: &lt;2&gt; — «el retry no reintenta»</p>
+    <p>
+      Sí reintentaba. <strong>El circuito se abría a mitad y cortaba los reintentos restantes</strong>,
+      que es precisamente el comportamiento correcto. La ventana rodante venía llena de fallos del
+      test anterior.
+    </p>
+    <p class="fix">
+      Llenar la ventana de éxitos antes de cada test. Y la lección de fondo: <strong>un fallo puede
+      señalar en la dirección equivocada</strong>, y creerse el primer diagnóstico habría llevado a
+      «arreglar» algo que funcionaba.
+    </p>
+  </div>
+
+  <p class="win">
+    La política depende de la <strong>consecuencia</strong> del fallo, no de la operación: el
+    reembolso reintenta más veces y <em>no lleva circuit breaker</em>, porque si un reembolso se
+    pierde el comprador se queda sin su dinero. Copiar las mismas anotaciones a todos los métodos es
+    el error de bulto de este módulo.
+  </p>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>El mensaje envenenado</h2>
+    <p>
+      Un modo de fallo que no existe en HTTP: si un mensaje no se puede procesar <em>nunca</em> y la
+      estrategia es reintentar, <strong>bloquea su partición para siempre</strong>.
+    </p>
+  </div>
+
+  <div class="sim">
+    <div class="sim-head">
+      <div class="ctl">
+        <button id="dlq-fail">failure-strategy = fail</button>
+        <button id="dlq-ignore">= ignore</button>
+        <button id="dlq-dlq" aria-pressed="true">= dead-letter-queue</button>
+      </div>
+    </div>
+    <div id="dlq-view" style="display:flex;gap:0.5rem;flex-wrap:wrap"></div>
+    <div id="dlq-status" class="status"></div>
+  </div>
+
+  <p class="warn">
+    El sistema no da errores llamativos: <strong>simplemente deja de avanzar</strong> para una parte
+    del tráfico. Es de los incidentes más desconcertantes que hay.
+  </p>
+
+  <div class="prose stack">
+    <h3>Y no todo lo que falla debe ir a la DLQ</h3>
+  </div>
+
+  <div class="cards">
+    <div class="card">
+      <h3>«No es para mí»</h3>
+      <p>Otro tipo de evento en un tema compartido → <strong>ignorar</strong>.</p>
+    </div>
+    <div class="card">
+      <h3>«Es mío y está roto»</h3>
+      <p>Payload corrupto, datos imposibles → <strong>dejar fallar</strong> → DLQ.</p>
+    </div>
+  </div>
+
+  <p class="note">
+    Si va todo, la DLQ se llena de mensajes sanos ajenos y <strong>se convierte en ruido que nadie
+    revisa</strong>, que es como mueren las colas de muertos en la práctica.
+  </p>
+
+  <div class="bug">
+    <h3>Y aquí Quarkus tiene una trampa</h3>
+    <p class="sym">Un evento ajeno acababa en la DLQ sin motivo</p>
+    <p>
+      <strong>Quarkus desactiva <code>FAIL_ON_UNKNOWN_PROPERTIES</code></strong> en su
+      <code>ObjectMapper</code>, así que <code>readValue()</code> acepta <em>cualquier</em> JSON y
+      devuelve un objeto con los campos a nulo. «Deserializar y ver si falla» no distingue nada.
+    </p>
+    <p class="fix">Comprobar la forma explícitamente antes de convertir.</p>
+  </div>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>Cardinalidad: la métrica que revienta Prometheus</h2>
+  </div>
+
+  <div class="sim">
+    <div class="sim-head">
+      <div class="ctl">
+        <button id="card-good" aria-pressed="true">tag("result", …)</button>
+        <button id="card-bad">tag("buyerId", …)</button>
+      </div>
+      <button class="alt" id="card-add">+ 50 compras</button>
+    </div>
+    <div id="card-view" style="font-family:var(--mono);font-size:0.9rem"></div>
+    <div id="card-bars" style="display:flex;flex-wrap:wrap;gap:2px;max-height:8rem;overflow:hidden"></div>
+    <div id="card-status" class="status"></div>
+  </div>
+
+  <p class="thesis">
+    Las etiquetas son para <strong>dimensiones acotadas</strong>; los identificadores van en las
+    trazas y los logs, que sí están pensados para alta cardinalidad.
+  </p>
+
+  <p class="note">
+    Y el otro lado de la moneda: <strong>separar resultados que significan cosas distintas</strong>.
+    Un pico de <code>declined</code> es un problema de negocio —una pasarela endureciendo reglas, un
+    fraude—; uno de <code>unavailable</code> es técnico. Un único contador de «errores» obliga a ir
+    a los logs para saber cuál está pasando.
+  </p>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>Liveness y readiness: la confusión que reinicia tu clúster</h2>
+  </div>
+
+  <div class="tablewrap">
+    <table>
+      <tr><th>Sonda</th><th>Pregunta</th><th>Si falla, Kubernetes…</th></tr>
+      <tr><td><code>liveness</code></td><td>¿estoy vivo?</td><td><strong>REINICIA</strong> el contenedor</td></tr>
+      <tr><td><code>readiness</code></td><td>¿puedo servir?</td><td>lo saca del balanceador, sin reiniciar</td></tr>
+    </table>
+  </div>
+
+  <p class="warn">
+    <strong>Liveness solo para lo que un reinicio pueda arreglar</strong> —un interbloqueo, una fuga
+    de memoria—. Poner la base de datos ahí significa que, el día que se caiga, Kubernetes reinicie
+    <strong>todas tus instancias a la vez</strong>: una incidencia se convierte en una caída total, y
+    los reinicios impiden que el servicio se recupere solo cuando la base vuelva.
+  </p>
+
+  <p>
+    Nuestro caso: un outbox atascado va en <strong>readiness</strong>. Si fuera liveness, el bucle de
+    reinicios <em>empeoraría</em> el atasco, porque cada arranque cuesta tiempo durante el cual nadie
+    vacía la cola.
+  </p>
+
+<pre class="good">{
+  <span class="str">"name"</span>: <span class="str">"outbox-backlog"</span>,
+  <span class="str">"status"</span>: <span class="str">"UP"</span>,
+  <span class="str">"data"</span>: { <span class="str">"pending"</span>: 3, <span class="str">"threshold"</span>: 1000 }
+}</pre>
+
+  <p class="win">
+    El health check devuelve <strong>datos, no solo un estado</strong>. Uno que diga «mal» a secas
+    obliga a ir a buscar por qué, a las tres de la mañana.
+  </p>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>Y la traza sobrevive al salto asíncrono</h2>
+    <p>
+      El contexto de OpenTelemetry viaja <strong>en las cabeceras del mensaje de Kafka</strong>, así
+      que el trabajo del consumidor aparece colgando de la petición que lo originó, aunque se
+      ejecute segundos después y en otro proceso.
+    </p>
+  </div>
+
+<pre>quarkus.log.console.format=... <mark>traceId=%X{traceId} spanId=%X{spanId}</mark> ...</pre>
+
+  <p class="note">
+    Esa línea es lo que convierte tres pilares sueltos en observabilidad de verdad: al ver un error
+    en los logs, ese identificador lleva <strong>directamente</strong> a la traza completa. Sin él,
+    correlacionar es buscar por marcas de tiempo.
+  </p>
+</section>
+
+<div class="pager">
+  <a href="7-eventos.html"><small>Anterior</small> ← Módulo 7 · Eventos y Kafka</a>
+  <a href="9-produccion.html"><small>Siguiente</small> Módulo 9 · Nativo y producción →</a>
+</div>
+
+</div>
+
+<script>
+(function () {
+  var reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /* retry */
+  var rtView = document.getElementById("rt-view"), rtSt = document.getElementById("rt-status");
+  function pintarRt(transitorio) {
+    rtView.innerHTML = "";
+    var n = transitorio ? 4 : 1;
+    for (var i = 0; i < 4; i++) {
+      var d = document.createElement("div");
+      var activo = i < n;
+      d.style.cssText = "font-family:var(--mono);font-size:0.78rem;padding:0.45rem 0.7rem;border-radius:3px;background:" +
+        (activo ? "var(--bad-soft)" : "var(--panel-2)") + ";opacity:" + (activo ? 1 : 0.35);
+      d.textContent = (i === 0 ? "intento inicial" : "reintento " + i) +
+        (activo ? "  → llega a la pasarela" : "  → NO se ejecuta");
+      rtView.appendChild(d);
+    }
+    rtSt.textContent = transitorio
+      ? "4 intentos: 1 inicial + 3 reintentos. Si la pasarela se recupera por el camino, el usuario ni se entera."
+      : "1 intento. abortOn corta en seco: un rechazo fallará igual, y reintentarlo gasta cuota y activa el antifraude.";
+    rtSt.style.color = transitorio ? "" : "var(--free)";
+  }
+  document.getElementById("rt-transient").addEventListener("click", function () { pintarRt(true); });
+  document.getElementById("rt-decline").addEventListener("click", function () { pintarRt(false); });
+  pintarRt(true);
+
+  /* circuit breaker */
+  var UMBRAL = 8, RATIO = 0.5;
+  var ventana = [], estado = "CLOSED", llamadas = 0, alPasarela = 0, cortadas = 0, sana = false;
+  var elState = document.getElementById("cb-state"), elWin = document.getElementById("cb-window");
+  var elSt = document.getElementById("cb-status");
+
+  function pinta() {
+    elState.textContent = estado;
+    elState.style.color = estado === "CLOSED" ? "var(--free)" : (estado === "OPEN" ? "var(--busy)" : "var(--accent)");
+    elWin.innerHTML = "";
+    ventana.slice(-UMBRAL).forEach(function (ok) {
+      var s = document.createElement("span");
+      s.style.cssText = "width:1rem;height:1rem;border-radius:2px;display:inline-block;background:" +
+        (ok ? "var(--free)" : "var(--busy)");
+      elWin.appendChild(s);
+    });
+    document.getElementById("cb-calls").textContent = llamadas;
+    document.getElementById("cb-gateway").textContent = alPasarela;
+    document.getElementById("cb-saved").textContent = cortadas;
+  }
+
+  document.getElementById("cb-call").addEventListener("click", function () {
+    llamadas++;
+    if (estado === "OPEN") {
+      cortadas++;
+      elSt.textContent = "Circuito ABIERTO: falla al instante y la pasarela no recibe NADA. Eso es lo que te salva a ti.";
+      elSt.style.color = "var(--busy)";
+      pinta();
+      return;
+    }
+    alPasarela++;
+    var ok = sana;
+    ventana.push(ok);
+    if (ventana.length >= UMBRAL) {
+      var ult = ventana.slice(-UMBRAL);
+      var fallos = ult.filter(function (x) { return !x; }).length;
+      if (estado === "CLOSED" && fallos / UMBRAL >= RATIO) {
+        estado = "OPEN";
+        elSt.textContent = "50 % de fallos en las últimas 8 llamadas → el circuito ABRE. A partir de ahora se falla sin llamar.";
+        elSt.style.color = "var(--busy)";
+        setTimeout(function () {
+          if (estado === "OPEN") {
+            estado = "HALF_OPEN";
+            elSt.textContent = "HALF_OPEN: pasado el tiempo de espera, deja pasar unas pocas de prueba.";
+            elSt.style.color = "var(--accent)";
+            pinta();
+          }
+        }, reduced ? 0 : 4000);
+        pinta();
+        return;
+      }
+      if (estado === "HALF_OPEN" && ok) {
+        estado = "CLOSED";
+        elSt.textContent = "Las de prueba salieron bien: el circuito vuelve a CERRARSE.";
+        elSt.style.color = "var(--free)";
+      } else if (estado === "HALF_OPEN" && !ok) {
+        estado = "OPEN";
+        elSt.textContent = "La de prueba también falló: vuelve a ABRIR.";
+        elSt.style.color = "var(--busy)";
+      }
+    }
+    if (estado === "CLOSED") {
+      elSt.textContent = ok ? "Llamada correcta." : "Fallo registrado en la ventana. Aún no hay suficientes para abrir.";
+      elSt.style.color = "";
+    }
+    pinta();
+  });
+
+  document.getElementById("cb-heal").addEventListener("click", function () {
+    sana = true;
+    elSt.textContent = "Pasarela curada. Sigue llamando: si el circuito está en HALF_OPEN, se cerrará.";
+    elSt.style.color = "var(--free)";
+  });
+  document.getElementById("cb-reset").addEventListener("click", function () {
+    ventana = []; estado = "CLOSED"; llamadas = 0; alPasarela = 0; cortadas = 0; sana = false;
+    elSt.textContent = "Circuito cerrado: todo pasa."; elSt.style.color = "";
+    pinta();
+  });
+  pinta();
+
+  /* DLQ */
+  var dlqView = document.getElementById("dlq-view"), dlqSt = document.getElementById("dlq-status");
+  function pintarDlq(modo) {
+    dlqView.innerHTML = "";
+    var msgs = ["ok", "ok", "☠ roto", "ok", "ok", "ok"];
+    msgs.forEach(function (m, i) {
+      var d = document.createElement("div");
+      var veneno = m.indexOf("☠") === 0;
+      var bloqueado = modo === "fail" && i > 2;
+      var perdido = modo === "ignore" && veneno;
+      var apartado = modo === "dlq" && veneno;
+      var bg = veneno ? (apartado ? "var(--accent-soft)" : "var(--bad-soft)")
+        : (bloqueado ? "var(--panel-2)" : "var(--good-soft)");
+      d.style.cssText = "font-family:var(--mono);font-size:0.72rem;padding:0.5rem 0.7rem;border-radius:3px;background:" +
+        bg + ";opacity:" + (bloqueado ? 0.35 : 1);
+      d.textContent = veneno ? (apartado ? "☠ → DLQ" : (perdido ? "☠ perdido" : "☠ atascado")) :
+        (bloqueado ? "bloqueado" : "procesado");
+      dlqView.appendChild(d);
+    });
+    if (modo === "fail") {
+      dlqSt.textContent = "El consumidor se para. Los 3 mensajes siguientes NUNCA se procesan: la partición queda bloqueada para siempre.";
+      dlqSt.style.color = "var(--busy)";
+    } else if (modo === "ignore") {
+      dlqSt.textContent = "Sigue adelante, pero el mensaje se pierde SIN DEJAR RASTRO. Silencioso y peligroso.";
+      dlqSt.style.color = "var(--busy)";
+    } else {
+      dlqSt.textContent = "El envenenado se aparta a otro tema con la causa en sus cabeceras, y el resto se sigue procesando. La única que no obliga a elegir entre pararlo todo y perder datos.";
+      dlqSt.style.color = "var(--free)";
+    }
+  }
+  ["fail", "ignore", "dlq"].forEach(function (m) {
+    document.getElementById("dlq-" + m).addEventListener("click", function () {
+      ["fail", "ignore", "dlq"].forEach(function (o) {
+        document.getElementById("dlq-" + o).setAttribute("aria-pressed", o === m ? "true" : "false");
+      });
+      pintarDlq(m);
+    });
+  });
+  pintarDlq("dlq");
+
+  /* cardinalidad */
+  var cardView = document.getElementById("card-view"), cardBars = document.getElementById("card-bars");
+  var cardSt = document.getElementById("card-status");
+  var buena = true, compras = 0;
+  function pintarCard() {
+    var series = buena ? 3 : compras;
+    cardView.innerHTML = "<strong style='font-size:1.6rem'>" + series + "</strong> series temporales · " +
+      compras + " compras registradas";
+    cardBars.innerHTML = "";
+    for (var i = 0; i < Math.min(series, 400); i++) {
+      var s = document.createElement("span");
+      s.style.cssText = "width:6px;height:14px;background:" + (buena ? "var(--free)" : "var(--busy)") + ";border-radius:1px";
+      cardBars.appendChild(s);
+    }
+    if (buena) {
+      cardSt.textContent = "Tres valores posibles: charged, declined, unavailable. Da igual cuántas compras haya.";
+      cardSt.style.color = "var(--free)";
+    } else {
+      cardSt.textContent = "Una serie temporal POR COMPRADOR. En producción, una por persona: memoria, disco y consultas lentas hasta que Prometheus se cae. Y no se nota hasta que ya ha pasado.";
+      cardSt.style.color = "var(--busy)";
+    }
+  }
+  document.getElementById("card-good").addEventListener("click", function () {
+    buena = true; this.setAttribute("aria-pressed", "true");
+    document.getElementById("card-bad").setAttribute("aria-pressed", "false"); pintarCard();
+  });
+  document.getElementById("card-bad").addEventListener("click", function () {
+    buena = false; this.setAttribute("aria-pressed", "true");
+    document.getElementById("card-good").setAttribute("aria-pressed", "false"); pintarCard();
+  });
+  document.getElementById("card-add").addEventListener("click", function () { compras += 50; pintarCard(); });
+  compras = 50; pintarCard();
+})();
+</script>
+</body>
+</html>

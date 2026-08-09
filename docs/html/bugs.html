@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Los 32 fallos que más enseñaron</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="wrap">
+
+<nav class="topnav">
+  <div class="crumbs"><a href="index.html">Quarkus a alta escala</a> <span>/</span> <span>Catálogo de fallos</span></div>
+  <a href="index.html">← Volver al índice</a>
+</nav>
+
+<header>
+  <p class="eyebrow">Todos los errores reales del recorrido</p>
+  <h1>Los 32 fallos que más enseñaron</h1>
+  <p class="lede">
+    Cada uno con su síntoma exacto y su arreglo. En una entrevista, saber <em>por qué</em> falla algo
+    vale más que recitar una API.
+  </p>
+</header>
+
+<section>
+  <div class="sim">
+    <div class="sim-head">
+      <div class="ctl" id="filtros"></div>
+      <span class="status" id="cuenta"></span>
+    </div>
+    <input id="buscar" type="search" placeholder="Buscar por síntoma, mensaje de error o concepto…"
+      style="width:100%;padding:0.7rem 0.9rem;border:1px solid var(--line);border-radius:3px;background:var(--panel-2);color:var(--ink);font-family:var(--sans);font-size:0.95rem">
+  </div>
+</section>
+
+<section>
+  <div class="buglist" id="lista"></div>
+  <p id="vacio" class="status" style="display:none">Ningún fallo coincide con esa búsqueda.</p>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>Los cinco patrones que se repiten</h2>
+    <p>Si miras los 32 juntos, casi todos caen en una de estas cinco formas.</p>
+  </div>
+
+  <div class="cards">
+    <div class="card">
+      <h3>1 · El fallo silencioso</h3>
+      <p>
+        No hay excepción, no hay log, el test pasa. El N+1, la sobreventa del optimista, la caché
+        sirviendo datos viejos, el <code>Uni</code> sin suscribir. <strong>Lo peligroso es lo que no
+        avisa.</strong>
+      </p>
+    </div>
+    <div class="card">
+      <h3>2 · El diagnóstico que engaña</h3>
+      <p>
+        El test rojo señala en la dirección equivocada. «El retry no reintenta» era el circuit
+        breaker haciendo su trabajo. <strong>Nunca te creas el primer diagnóstico.</strong>
+      </p>
+    </div>
+    <div class="card">
+      <h3>3 · Interceptores y auto-invocación</h3>
+      <p>
+        Tres veces: <code>@Transactional</code>, la saga y <code>@CacheInvalidateAll</code>. CDI
+        <strong>solo intercepta llamadas que entran desde fuera del bean</strong>.
+      </p>
+    </div>
+    <div class="card">
+      <h3>4 · Build time contra runtime</h3>
+      <p>
+        Propiedades congeladas en el artefacto, perfiles grabados, beans que dejan de existir.
+        <strong>Casi nada de esto falla en tu máquina.</strong>
+      </p>
+    </div>
+    <div class="card">
+      <h3>5 · Comparar dos cosas distintas</h3>
+      <p>
+        Dos tamaños de pool disfrazados de dos modelos. Dos builds distintos disfrazados de JVM
+        contra nativo. <strong>Cambia una variable cada vez</strong> — y aun escrito, se repite.
+      </p>
+    </div>
+  </div>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>Y una defensa que funcionó siempre</h2>
+    <p class="thesis">
+      Contrastar el número con la aritmética que ya conoces. La ley de Little, el tamaño de un pool,
+      el número de hilos. <strong>Un resultado que no puedes explicar es un resultado
+      equivocado</strong> — y eso cazó los dos errores de medición del recorrido.
+    </p>
+  </div>
+</section>
+
+<div class="pager">
+  <a href="9-produccion.html"><small>Anterior</small> ← Módulo 9 · Nativo y producción</a>
+  <a href="index.html"><small>Volver</small> Índice del curso →</a>
+</div>
+
+</div>
+
+<script>
+(function () {
+  var BUGS = [
+    { m: 2, t: "@Consumes a nivel de clase", s: "415 Unsupported Media Type en 6 tests",
+      d: "Se aplicaba también a publish/pause/archive, que son POST SIN cuerpo y llegan sin Content-Type.",
+      f: "@Consumes describe lo que acepta un método, no una política de clase. @Produces sí puede ir en la clase." },
+    { m: 3, t: "CHAR(3) en PostgreSQL es bpchar", s: "Schema validation: wrong column type in price_currency: found [bpchar], expecting [char(3)]",
+      d: "CHAR rellena con espacios hasta la longitud fijada. Casi nunca es lo que quieres.",
+      f: "VARCHAR(3). Lo detectó `validate`, que fue exactamente su razón de ser." },
+    { m: 3, t: "Java no elige entre abstract y default", s: "PanacheListingRepository is not abstract and does not override abstract method count()",
+      d: "Un método abstract de una interfaz y un default de otra sin relación entre ellas: el compilador no decide por ti.",
+      f: "Y el arreglo evidente falló en runtime: declarar el método te saca de la generación de bytecode de Quarkus. Consulta directa con EntityManager." },
+    { m: 3, t: "@Nested y los interceptores CDI — primera vez", s: "13 deployment problems: declares an interceptor binding but it must be ignored per CDI rules",
+      d: "@TestTransaction en métodos de clases anidadas de JUnit.",
+      f: "Aplanar el fichero de test." },
+    { m: 3, t: "El N+1 que no ocurrió", s: "Esperaba más de 20 consultas y obtuvo 2",
+      d: "La caché de primer nivel de Hibernate se lo tragó: los objetos ya estaban en la sesión.",
+      f: "El mismo bucle cuesta 2 o 40 consultas según lo que la sesión cargara antes. Por eso el N+1 es tan escurridizo." },
+    { m: 3, t: "Paginación sin orden total", s: "Elementos que se repiten entre páginas y otros que desaparecen",
+      d: "ORDER BY title deja el desempate a PostgreSQL, que no lo garantiza.",
+      f: "Añadir la clave primaria como último criterio: ORDER BY title, id." },
+    { m: 3, t: "Mensajes de excepción en dos idiomas", s: "\"detail\": \"No se puede salir del estado terminal ARCHIVED\" junto a mensajes en inglés",
+      d: "Los mensajes de excepción acaban en el `detail` de las respuestas problem+json, que son contrato de API.",
+      f: "Convención: documentación y comentarios en español; mensajes de excepción y commits en inglés." },
+    { m: 4, t: "El daemon de Gradle en Java 21", s: "UnsupportedClassVersionError: class file version 69.0 … up to 65.0",
+      d: "El toolchain compila a Java 25 pero la augmentation ocurre DENTRO del daemon de Gradle. Los tests pasaban porque Gradle los lanza en un JVM forkeado.",
+      f: "sdk env antes de invocar a Gradle. Primera de tres veces que la desalineación de versiones muerde." },
+    { m: 4, t: "Bloquear un event loop", s: "WARN Thread vert.x-eventloop-thread-0 has been blocked for 2013 ms",
+      d: "Devolver Uni es una promesa tuya que nadie verifica. No cae esa petición: caen todas las del loop. Un endpoint impecable pasó de 968 a 19,7 req/s.",
+      f: "@Blocking. Y ojo: el aviso solo salta a partir de 2 s — un bloqueo de 100 ms es igual de letal y nunca lo dispara." },
+    { m: 4, t: "@RunOnVirtualThread sobre un método que devuelve Uni", s: "Compila, arranca y no cambia nada (19 357 contra 19 287 req/s)",
+      d: "El hilo virtual vive dos microsegundos y muere justo antes del trabajo que creías cubrir.",
+      f: "Quarkus lo acepta en silencio. No cuesta rendimiento, pero documenta una garantía que no existe y desactiva el escepticismo de quien lo lea mañana." },
+    { m: 4, t: "Comparar dos tamaños de pool creyendo comparar dos modelos", s: "«El reactivo rinde 2,6× peor»",
+      d: "Los valores por defecto de los pools JDBC y reactivo NO coinciden: ~50 conexiones contra ~21.",
+      f: "Contarlas en pg_stat_activity durante la carga. Cambia UNA variable, y verifica el recurso escaso en su origen." },
+    { m: 4, t: "Saturar sin errores", s: "0 % de errores, CPU al 10 %, y el cliente esperando un segundo",
+      d: "El servidor saturado no falla: encola. Un panel que mida errores y CPU lo declara sano.",
+      f: "Vigilar la p99, no la media ni la tasa de errores. Y rechazar pronto (módulo 9)." },
+    { m: 5, t: "@Nested y los interceptores CDI — segunda vez", s: "21 tests con 401 en vez de 400",
+      d: "Las clases anidadas no heredan @TestSecurity de la clase externa.",
+      f: "Repetir la anotación en cada clase anidada. Si pasa una tercera vez, deja de usar @Nested con Quarkus." },
+    { m: 5, t: "Los roles en el claim equivocado", s: "@RolesAllowed rechaza a todo el mundo aunque el token traiga los roles",
+      d: "Con scope microprofile-jwt llegan en `groups`; un Keycloak de producción suele ponerlos en realm_access.roles. La identidad llega SIN roles.",
+      f: "quarkus.oidc.roles.role-claim-path=realm_access/roles. Y tener un test con token real, o esto no aparece nunca." },
+    { m: 5, t: "@OidcSecurity, no @JwtSecurity", s: "package io.quarkus.test.security.jwt does not exist",
+      d: "Dos anotaciones parecidas en artefactos distintos: @JwtSecurity es de smallrye-jwt.",
+      f: "Para quarkus-oidc, @OidcSecurity de quarkus-test-security-oidc." },
+    { m: 5, t: "Un segundo Keycloak peleándose con Dev Services", s: "TestAbortedException: Boot failed",
+      d: "@QuarkusTestResource(KeycloakTestResourceLifecycleManager) levanta su propio Keycloak, con sus usuarios de ejemplo.",
+      f: "Quitarlo: KeycloakTestClient se autoconfigura con las propiedades que publica Dev Services." },
+    { m: 5, t: "Test intermitente de firma manipulada", s: "Pasaba o fallaba según qué token tocara",
+      d: "En base64, los caracteres finales codifican bits de relleno que se descartan al decodificar: cambiar el último a veces NO cambia la firma binaria.",
+      f: "Alterar un carácter del medio." },
+    { m: 5, t: "La seguridad se evalúa antes que la validación", s: "expected <400> but was <401> — en 21 tests",
+      d: "No es un bug: es el orden correcto. Validar el cuerpo de un anónimo regala el mapa de la API.",
+      f: "Fijarlo en un test que mande un cuerpo inválido SIN token y exija 401." },
+    { m: 6, t: "El compilador señalando un error de arquitectura", s: "fromDomain(Reservation) is not public in ReservationEntity",
+      d: "No era un problema de visibilidad: la capa de aplicación estaba manoseando entidades JPA.",
+      f: "De ahí nació ReservationRepository. El compilador tenía razón sobre algo más de fondo." },
+    { m: 6, t: "@MethodSource debe ser estático", s: "PreconditionViolationException: local factory methods must be static",
+      d: "Salvo con @TestInstance(PER_CLASS), imprescindible cuando la fábrica necesita beans inyectados.",
+      f: "@TestInstance(TestInstance.Lifecycle.PER_CLASS)." },
+    { m: 6, t: "El bloqueo optimista pierde ventas", s: "13 ventas de 50 posibles, con stock en el almacén",
+      d: "Dos compradores que reservan unidades DISTINTAS escriben la misma fila, así que chocan por la versión. El conflicto es de fila, no de negocio.",
+      f: "UPDATE atómico condicional. Y no es lentitud: son 37 ventas que no entran." },
+    { m: 6, t: "Fuga de inventario silenciosa", s: "optimistic: quedan 4 reservadas de 100 · las otras dos: 0",
+      d: "Cuando el release choca por versión, la reserva se queda hecha. Unidades que existen, nadie compra y nadie libera.",
+      f: "El inventario se evapora poco a poco y nada en los logs lo dice." },
+    { m: 6, t: "getConstraintName() llega null", s: "ConstraintViolationException sin traducir → 500 en vez de «franja ocupada»",
+      d: "Con las restricciones de exclusión de PostgreSQL, ese campo no siempre viene relleno.",
+      f: "Mirar también el mensaje de la excepción y sus causas." },
+    { m: 6, t: "DatabaseCleaner incompleto", s: "StockItemNotFoundException desconcertante en el barrido de caducadas",
+      d: "Reservas huérfanas de un test anterior apuntaban a existencias ya borradas.",
+      f: "Un cleaner incompleto no falla donde se olvidó, sino en el siguiente test que corra." },
+    { m: 7, t: "El nombre del canal no es el nombre del tema", s: "SRMSG00073: cannot be used for both incoming and outgoing",
+      d: "SmallRye no deja usar el mismo nombre de canal para entrada y salida, aunque apunten al mismo topic.",
+      f: "Dos canales, events-out y events-in, sobre el mismo topic de Kafka." },
+    { m: 7, t: "El planificador publicando durante los tests", s: "Aserciones que pasan o fallan según el momento",
+      d: "Un relay disparándose cada segundo convierte cualquier comprobación sobre «lo pendiente» en una carrera.",
+      f: "%test.quarkus.scheduler.enabled=false y llamar a publishPending() explícitamente." },
+    { m: 7, t: "Tests antiguos fallando por una fila de más", s: "expected: <1> but was: <2>, en OTRA clase",
+      d: "Los tests con transacciones reales dejan filas; los que usan @TestTransaction asumen base vacía.",
+      f: "Quien no puede deshacer lo que escribe, recoge al salir. Al meter asincronía, todo lo determinista deja de serlo." },
+    { m: 7, t: "Aserción sobre el JSON crudo", s: "payload.contains(\"\\\"available\\\":10\") → false",
+      d: "Ata el test al formato exacto que produzca Jackson: espacios, orden de campos.",
+      f: "Deserializar y comprobar el objeto." },
+    { m: 8, t: "El test rojo que describía mal el problema", s: "expected: <4> but was: <2> — «el retry no reintenta»",
+      d: "Sí reintentaba: el circuito se abría a mitad y cortaba los reintentos, que es el comportamiento correcto del orden de interceptores.",
+      f: "Llenar la ventana rodante de éxitos antes de cada test. Un fallo puede señalar en la dirección equivocada." },
+    { m: 8, t: "Quarkus desactiva FAIL_ON_UNKNOWN_PROPERTIES", s: "Eventos ajenos acababan en la cola de mensajes muertos",
+      d: "readValue() acepta CUALQUIER JSON y devuelve un objeto con los campos a nulo. «Deserializar y ver si falla» no distingue nada.",
+      f: "Comprobar la forma explícitamente. Una DLQ llena de mensajes sanos es ruido que nadie revisa." },
+    { m: 8, t: "/q/health daba 404", s: "Expected status code <200> but was <404>",
+      d: "quarkus-smallrye-health no lo arrastra ninguna otra extensión, ni siquiera micrometer.",
+      f: "Declararla explícitamente." },
+    { m: 8, t: "Estado en memoria que sobrevive al test", s: "Observabilidad fallaba SOLO en la suite completa",
+      d: "Los tests de resiliencia dejaban el circuito abierto, y un circuito abierto impide cobrar.",
+      f: "Cerrarlo en el @AfterEach. La lección del módulo 7 aplicada a algo que no se ve en ninguna parte." },
+    { m: 9, t: "Nativo y JAR a la vez", s: "Outputting both native and JAR packages is not currently supported",
+      d: "Hay que desactivar el empaquetado JAR explícitamente al compilar a nativo.",
+      f: "-Dquarkus.package.jar.enabled=false" },
+    { m: 9, t: "quarkus.oidc.enabled es de BUILD TIME", s: "UnsatisfiedResolutionException for type JsonWebToken",
+      d: "Apagarla hace que ARC no genere el bean, y la inyección se queda sin resolver AL COMPILAR.",
+      f: "La equivalente de runtime es quarkus.oidc.tenant-enabled." },
+    { m: 9, t: "El binario es de un SO y una arquitectura", s: "exec format error",
+      d: "container-build produce un ELF de Linux. No se ejecuta en macOS.",
+      f: "Ejecutarlo en un contenedor. No hay «compila una vez, ejecuta donde sea»." },
+    { m: 9, t: "La imagen base en Java 21 — tercera vez", s: "UnsupportedClassVersionError: class file version 69.0",
+      d: "El Dockerfile.jvm que genera Quarkus usa una base con Java 21.",
+      f: "«Uso Java 25» es una propiedad de CADA proceso que toca tu bytecode, no del proyecto." },
+    { m: 9, t: "El perfil de build queda grabado en el artefacto", s: "Las variables de entorno no sobrescribían nada",
+      d: "Compilar con -Dquarkus.profile=bench fija ese perfil como el activo por defecto, y sus propiedades %bench. ganan.",
+      f: "Propiedades de sistema (-D) al ejecutar." },
+    { m: 9, t: "53 220 req/s sobre un endpoint que duerme 100 ms", s: "Aritméticamente imposible: el techo son 2 000",
+      d: "192 000 de aquellas «respuestas» eran 429 del rate limiter. Y peor: las dos versiones NO tenían el mismo código.",
+      f: "Mirar los códigos de estado y contrastar con la ley de Little. El error del módulo 4, repetido a pesar de tenerlo escrito." },
+    { m: 9, t: "La caché ocultando una publicación archivada", s: "Expected: a collection with size <0> · Actual: [{availableUnits=10…}]",
+      d: "La invalidación por evento cubría el stock, pero archivar cambia la visibilidad y no genera evento de inventario.",
+      f: "Enumerar TODAS las vías que pueden cambiar el resultado. La caché no introdujo un fallo evidente: uno que solo aparece si alguien mira." },
+    { m: 9, t: "Interceptores y auto-invocación — tercera vez", s: "@CacheInvalidateAll en un método privado no hace nada",
+      d: "CDI solo intercepta llamadas que entran desde FUERA del bean. Igual que @Transactional en el 6 y la saga en el 7.",
+      f: "Anotar los métodos públicos por los que se entra." }
+  ];
+
+  var lista = document.getElementById("lista");
+  var buscar = document.getElementById("buscar");
+  var cuenta = document.getElementById("cuenta");
+  var vacio = document.getElementById("vacio");
+  var filtroMod = null;
+
+  var modulos = [];
+  BUGS.forEach(function (b) { if (modulos.indexOf(b.m) < 0) modulos.push(b.m); });
+  modulos.sort(function (a, b) { return a - b; });
+
+  var cont = document.getElementById("filtros");
+  var btnTodos = document.createElement("button");
+  btnTodos.textContent = "Todos";
+  btnTodos.setAttribute("aria-pressed", "true");
+  btnTodos.addEventListener("click", function () { filtroMod = null; marcar(); pintar(); });
+  cont.appendChild(btnTodos);
+  var botones = [btnTodos];
+  modulos.forEach(function (m) {
+    var b = document.createElement("button");
+    b.className = "alt";
+    b.textContent = "Módulo " + m;
+    b.addEventListener("click", function () { filtroMod = m; marcar(b); pintar(); });
+    cont.appendChild(b);
+    botones.push(b);
+  });
+  function marcar(activo) {
+    botones.forEach(function (b) { b.setAttribute("aria-pressed", b === (activo || btnTodos) ? "true" : "false"); });
+  }
+
+  function pintar() {
+    var q = buscar.value.trim().toLowerCase();
+    lista.innerHTML = "";
+    var n = 0;
+    BUGS.forEach(function (b) {
+      if (filtroMod !== null && b.m !== filtroMod) return;
+      if (q && (b.t + " " + b.s + " " + b.d + " " + b.f).toLowerCase().indexOf(q) < 0) return;
+      n++;
+      var d = document.createElement("div");
+      d.className = "bug";
+      d.innerHTML =
+        "<div style='display:flex;justify-content:space-between;gap:1rem;align-items:baseline'>" +
+        "<h3>" + b.t + "</h3>" +
+        "<span class='eyebrow' style='white-space:nowrap'>MÓDULO " + b.m + "</span></div>" +
+        "<p class='sym'>" + b.s + "</p>" +
+        "<p>" + b.d + "</p>" +
+        "<p class='fix'>" + b.f + "</p>";
+      lista.appendChild(d);
+    });
+    cuenta.textContent = n + " de " + BUGS.length + " fallos";
+    vacio.style.display = n === 0 ? "block" : "none";
+  }
+
+  buscar.addEventListener("input", pintar);
+  pintar();
+})();
+</script>
+</body>
+</html>

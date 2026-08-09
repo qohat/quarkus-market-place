@@ -1,0 +1,691 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Concurrencia — bloqueante, virtual threads y reactivo</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="wrap">
+
+<nav class="topnav">
+  <div class="crumbs"><a href="index.html">Quarkus a alta escala</a> <span>/</span> <span>Módulo 4</span></div>
+  <a href="bugs.html">Catálogo de fallos →</a>
+</nav>
+
+<header>
+  <p class="eyebrow">Módulo 4 · el eje de la escalabilidad</p>
+  <h1>El cuello de botella no son los hilos</h1>
+  <p class="lede">
+    Tres modelos de concurrencia resolviendo el mismo trabajo. Uno multiplica por diez… hasta que
+    aparece una base de datos y los tres empatan.
+  </p>
+</header>
+
+<section>
+  <div class="prose stack">
+    <h2>Una fórmula, y no es una metáfora</h2>
+    <p>
+      Todo el módulo cuelga de la <strong>ley de Little</strong>. No es una regla aproximada: es
+      aritmética, y tu servidor la obedece.
+    </p>
+  </div>
+
+  <pre>peticiones_en_vuelo  =  throughput  ×  latencia
+         L           =      λ       ×     W</pre>
+
+  <div class="prose stack">
+    <p>
+      Para servir <strong>10.000 req/s</strong> con <strong>100 ms</strong> de latencia hacen falta
+      <strong>1.000 peticiones vivas a la vez</strong>. No hay forma de esquivarlo. La única
+      pregunta del módulo es <em>qué es físicamente</em> cada una de esas mil.
+    </p>
+  </div>
+
+  <div class="cards">
+    <div class="card">
+      <h3>Hilo por petición</h3>
+      <p>Un hilo del sistema operativo. <strong>~1 MB</strong> de pila reservada más el cambio de contexto en el kernel.</p>
+    </div>
+    <div class="card">
+      <h3>Virtual thread</h3>
+      <p>Un objeto en el heap. <strong>~1 KB</strong>, y crece por segmentos según hace falta.</p>
+    </div>
+    <div class="card">
+      <h3>Reactivo</h3>
+      <p>Una continuación en una cola. <strong>Cientos de bytes</strong>, sin ningún hilo asociado.</p>
+    </div>
+  </div>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>Míralo: 8 peticiones, 4 hilos, 100 ms de espera cada una</h2>
+    <p>
+      El trabajo es idéntico en los tres carriles: esperar a la base de datos sin gastar CPU. Lo
+      único que cambia es <strong>quién espera</strong>.
+    </p>
+  </div>
+
+  <div class="sim">
+    <div class="sim-head">
+      <button class="play" id="play1">Reproducir</button>
+      <div class="legend">
+        <span class="key"><span class="swatch" style="background:var(--busy)"></span> hilo ocupado</span>
+        <span class="key"><span class="swatch" style="background:var(--wait)"></span> esperando I/O (nadie ocupado)</span>
+        <span class="key"><span class="swatch" style="background:var(--free)"></span> hilo libre</span>
+      </div>
+    </div>
+
+    <div class="lane" id="lane-block">
+      <div class="lane-title">Bloqueante — el hilo se queda dormido esperando<span class="lane-total">4 tandas</span></div>
+      <div class="rows"></div>
+    </div>
+
+    <div class="lane" id="lane-virt">
+      <div class="lane-title">Virtual threads — la JVM desmonta el hilo al bloquear<span class="lane-total">1 tanda</span></div>
+      <div class="rows"></div>
+    </div>
+
+    <div class="axis"><span></span><div class="ticks" id="ticks1"></div></div>
+  </div>
+
+  <div class="prose stack">
+    <p>
+      Arriba, cuatro hilos rojos de punta a punta: <strong>ocupados sin hacer nada</strong>. Las
+      peticiones 5 a 8 esperan turno. Abajo, los mismos cuatro hilos portadores atienden las ocho a
+      la vez, porque en cuanto una se bloquea, la JVM la desmonta y coge otra.
+    </p>
+    <p class="thesis">
+      La espera dura exactamente lo mismo. Lo que cambió es que dejó de hacer cola.
+    </p>
+  </div>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>Los tres carriles, en el código</h2>
+    <p>
+      Y aquí está el detalle que hace de Loom algo distinto: los dos primeros métodos son
+      <strong>idénticos carácter por carácter</strong>. Lo único que los separa es una anotación.
+    </p>
+  </div>
+
+<pre><span class="cm">// 1 — worker thread. Un hilo del SO se queda dormido 100 ms.</span>
+<span class="kw">@GET @Path</span>(<span class="str">"/blocking"</span>)
+<span class="kw">public</span> String blocking() <span class="kw">throws</span> InterruptedException {
+    Thread.sleep(IO_LATENCY);
+    <span class="kw">return</span> thread();
+}
+
+<span class="cm">// 2 — virtual thread. MISMO CUERPO. La JVM lo desmonta de su carrier.</span>
+<span class="kw">@GET @Path</span>(<span class="str">"/virtual"</span>)
+<mark><span class="kw">@RunOnVirtualThread</span></mark>
+<span class="kw">public</span> String virtual() <span class="kw">throws</span> InterruptedException {
+    Thread.sleep(IO_LATENCY);
+    <span class="kw">return</span> thread();
+}
+
+<span class="cm">// 3 — reactivo. Nadie duerme: un temporizador y una continuación.</span>
+<span class="kw">@GET @Path</span>(<span class="str">"/reactive"</span>)
+<span class="kw">public</span> <mark>Uni&lt;String&gt;</mark> reactive() {
+    <span class="kw">return</span> Uni.createFrom().item(Resource::thread)
+            .onItem().delayIt().by(IO_LATENCY);
+}</pre>
+
+  <div class="prose stack">
+    <p>
+      Ejecutándolos, cada uno declara dónde vive:
+    </p>
+  </div>
+
+  <div class="tablewrap">
+    <table>
+      <tr><th>Endpoint</th><th>Hilo que atiende</th></tr>
+      <tr><td><code>/blocking</code></td><td><code>executor-thread-1</code></td></tr>
+      <tr><td><code>/virtual</code></td><td><code>VirtualThread[#61]/runnable@<strong>ForkJoinPool-1-worker-1</strong></code></td></tr>
+      <tr><td><code>/reactive</code></td><td><code>vert.x-eventloop-thread-9</code></td></tr>
+    </table>
+  </div>
+
+  <p class="note">
+    Ese <code>@</code> del medio es el <strong>carrier thread</strong>: el hilo de plataforma real
+    que ejecuta al virtual <em>ahora mismo</em>. Al llegar el <code>sleep</code>, el virtual se
+    desmonta y el carrier queda libre. Loom, resumido en una línea de texto.
+  </p>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>La regla que resuelve todas las dudas</h2>
+    <p>
+      Quarkus clasifica cada endpoint <strong>al compilar</strong>, mirando el tipo de retorno. Las
+      anotaciones no añaden comportamiento: <strong>corrigen esa clasificación cuando el tipo de
+      retorno miente</strong>.
+    </p>
+  </div>
+
+  <pre>¿devuelve Uni / Multi / CompletionStage?
+   sí  →  NO BLOQUEANTE  →  event loop
+   no  →  BLOQUEANTE     →  worker pool</pre>
+
+  <div class="tablewrap">
+    <table>
+      <tr><th>Anotación</th><th>Qué corrige</th><th>Cuándo hace falta</th></tr>
+      <tr><td><code>@Blocking</code></td><td>«devuelvo <code>Uni</code>, pero por dentro bloqueo»</td><td>Un <code>Uni</code> que envuelve JDBC</td></tr>
+      <tr><td><code>@NonBlocking</code></td><td>«devuelvo <code>String</code>, pero no bloqueo»</td><td>Respuesta trivial; ahorra el salto de hilo</td></tr>
+      <tr><td><code>@RunOnVirtualThread</code></td><td>«soy bloqueante, dame un hilo virtual»</td><td>El cuerpo bloquea de verdad</td></tr>
+    </table>
+  </div>
+
+  <p class="warn">
+    <strong>Si el tipo de retorno ya dice la verdad, la anotación sobra</strong> — y a veces es
+    peligrosa. Poner <code>@RunOnVirtualThread</code> sobre un método que devuelve <code>Uni</code>
+    compila, arranca y no cambia el rendimiento: el hilo virtual vive dos microsegundos y muere
+    justo antes del trabajo que creías cubrir. Documenta una garantía que no existe.
+  </p>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>El bug número 1: bloquear un event loop</h2>
+    <p>
+      Un método que <strong>miente</strong>: firma no bloqueante, cuerpo que bloquea. Lo grave no
+      es que esa petición se ponga lenta — es lo que le hace a las demás.
+    </p>
+  </div>
+
+<pre class="bad"><span class="kw">@GET @Path</span>(<span class="str">"/lie"</span>)
+<span class="kw">public</span> Uni&lt;String&gt; lie() <span class="kw">throws</span> InterruptedException {
+    <mark>Thread.sleep(100);</mark>   <span class="cm">// ← sobre un event loop compartido por miles de conexiones</span>
+    <span class="kw">return</span> Uni.createFrom().item(thread());
+}</pre>
+
+  <div class="prose stack">
+    <p>
+      Pulsa para cargar el endpoint mentiroso y ver qué le pasa a <code>/reactive</code>, que
+      <strong>no ha cambiado ni una línea</strong>:
+    </p>
+  </div>
+
+  <div class="sim">
+    <div class="sim-head">
+      <div class="ctl">
+        <button id="loop-run">Cargar /bench/lie</button>
+        <button class="alt" id="loop-reset">Reiniciar</button>
+      </div>
+      <div class="legend">
+        <span class="key"><span class="swatch" style="background:var(--free)"></span> event loop libre</span>
+        <span class="key"><span class="swatch" style="background:var(--busy)"></span> bloqueado</span>
+      </div>
+    </div>
+    <div id="loops" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(2.2rem,1fr));gap:0.4rem"></div>
+    <div id="loop-status" class="status">24 event loops · todos disponibles</div>
+  </div>
+
+  <div class="metrics">
+    <div class="metric"><span class="n">968</span><span class="l">req/s en calma</span></div>
+    <div class="metric hl"><span class="n">19,7</span><span class="l">req/s con el bug activo</span></div>
+    <div class="metric"><span class="n">109 ms</span><span class="l">p99 en calma</span></div>
+    <div class="metric hl"><span class="n">5 287 ms</span><span class="l">p99 con el bug activo</span></div>
+  </div>
+
+  <div class="prose stack">
+    <p>
+      <strong>49 veces peor</strong>, en un endpoint impecable, por culpa de otro escrito en otro
+      módulo por otra persona. Y el detalle que lo hace desesperante de diagnosticar:
+      <strong>la CPU está ociosa</strong>. Veinticuatro hilos durmiendo y un servidor que no
+      responde.
+    </p>
+    <p class="thesis">
+      En el modelo bloqueante, un endpoint lento perjudica a los demás en proporción. En el
+      reactivo, los tumba a todos.
+    </p>
+  </div>
+
+  <div class="prose stack">
+    <h3>La cura, y por qué es contraintuitiva</h3>
+  </div>
+
+  <div class="tablewrap">
+    <table>
+      <tr><th>Endpoint</th><th class="num">req/s</th><th class="num">p50</th><th class="num">p99</th></tr>
+      <tr><td><code>/lie</code> — sin <code>@Blocking</code></td><td class="num">115</td><td class="num">1 653 ms</td><td class="num">3 318 ms</td></tr>
+      <tr><td><code>/fixed</code> — con <code>@Blocking</code></td><td class="num"><strong>1 919</strong></td><td class="num"><strong>104 ms</strong></td><td class="num"><strong>110 ms</strong></td></tr>
+    </table>
+  </div>
+
+  <p class="win">
+    <strong>16,7× más throughput por marcar el endpoint como bloqueante.</strong> No porque bloquear
+    sea bueno, sino porque el recurso escaso deja de ser 24 event loops y pasa a ser 200 workers.
+    La anotación no cambia el trabajo: cambia <em>dónde se hace la cola</em>.
+  </p>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>Las mediciones</h2>
+    <p>Sintético primero: 100 ms de I/O simulada, sin base de datos.</p>
+  </div>
+
+  <div class="tablewrap">
+    <table>
+      <tr><th>Concurrencia</th><th>Modelo</th><th class="num">req/s</th><th class="num">p50</th><th class="num">p99</th></tr>
+      <tr><td rowspan="3">50</td><td>blocking</td><td class="num">467</td><td class="num">107 ms</td><td class="num">112 ms</td></tr>
+      <tr><td>virtual</td><td class="num">454</td><td class="num">111 ms</td><td class="num">115 ms</td></tr>
+      <tr><td>reactive</td><td class="num">486</td><td class="num">103 ms</td><td class="num">106 ms</td></tr>
+      <tr><td rowspan="3">500</td><td>blocking</td><td class="num"><strong>1 887</strong></td><td class="num"><strong>263 ms</strong></td><td class="num">311 ms</td></tr>
+      <tr><td>virtual</td><td class="num">4 456</td><td class="num">112 ms</td><td class="num">127 ms</td></tr>
+      <tr><td>reactive</td><td class="num">4 823</td><td class="num">103 ms</td><td class="num">111 ms</td></tr>
+      <tr><td rowspan="3">2000</td><td>blocking</td><td class="num"><strong>1 896</strong></td><td class="num"><strong>1 048 ms</strong></td><td class="num">1 068 ms</td></tr>
+      <tr><td>virtual</td><td class="num">18 331</td><td class="num">108 ms</td><td class="num">130 ms</td></tr>
+      <tr><td>reactive</td><td class="num">19 287</td><td class="num">102 ms</td><td class="num">112 ms</td></tr>
+    </table>
+  </div>
+
+  <div class="cards">
+    <div class="card">
+      <h3>Con 50 en vuelo, los tres empatan</h3>
+      <p>467, 454, 486. Por debajo de la saturación, elegir reactivo no da nada y solo cuesta complejidad.</p>
+    </div>
+    <div class="card">
+      <h3>El bloqueante se congela</h3>
+      <p>1 887 con 500 clientes y 1 896 con 2 000. Cuadruplicas la carga y el throughput no se mueve.</p>
+    </div>
+    <div class="card good">
+      <h3>Y la ley de Little acierta</h3>
+      <p>Predicho 265 ms, medido 263. Predicho 1 055 ms, medido 1 048. <strong>Menos del 1 % de error.</strong></p>
+    </div>
+  </div>
+
+  <p class="warn">
+    <strong>Cero errores en las tres filas.</strong> El servidor saturado no falló: solo tardó un
+    segundo en hacer algo de cien milisegundos. Un panel que mida errores y CPU lo declara
+    <em>sano</em> mientras es inutilizable. Por eso la métrica que manda es la p99.
+  </p>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>Y ahora, con base de datos real</h2>
+    <p>
+      Misma prueba, pero cada petición hace una consulta de 10 ms. Aparece un segundo recurso
+      escaso: <strong>el pool de 20 conexiones</strong>.
+    </p>
+  </div>
+
+  <div class="tablewrap">
+    <table>
+      <tr><th>Concurrencia</th><th class="num">blocking</th><th class="num">virtual</th><th class="num">reactive</th></tr>
+      <tr><td>50</td><td class="num">1 391</td><td class="num">1 398</td><td class="num">1 399</td></tr>
+      <tr><td>500</td><td class="num">1 385</td><td class="num">1 379</td><td class="num">1 366</td></tr>
+      <tr><td>2000</td><td class="num">1 381</td><td class="num">1 443</td><td class="num">1 366</td></tr>
+    </table>
+  </div>
+
+  <pre>SIN base de datos (c=2000)   blocking  1 896   virtual 18 331   reactive 19 287   →  10×
+CON base de datos (c=2000)   blocking  1 381   virtual  1 443   reactive  1 366   →   1×</pre>
+
+  <p class="thesis">
+    La ventaja de 10× era real y se evapora en cuanto hay una base de datos detrás. Los virtual
+    threads no regalan capacidad de base de datos. Nadie lo hace.
+  </p>
+
+  <details>
+    <summary>El error que casi arruina esta medición</summary>
+    <p>
+      La primera pasada dio <strong>3 759 req/s para el bloqueante y 1 433 para el reactivo</strong>,
+      y la conclusión fácil habría sido «el reactivo rinde peor». Es falsa.
+    </p>
+    <p style="margin-top:0.7rem">
+      Contando conexiones reales en <code>pg_stat_activity</code> durante la carga aparecieron
+      <strong>~50 conexiones activas en la pila JDBC frente a ~21 en la reactiva</strong>: los
+      valores por defecto de los dos pools no coinciden. No se estaban comparando dos modelos de
+      concurrencia, sino <strong>dos tamaños de pool</strong>.
+    </p>
+    <p style="margin-top:0.7rem">
+      La ley de Little lo confirmó: 50 ÷ 3 759 = 13,3 ms por conexión; 20 ÷ 1 433 = 14,0 ms. El
+      mismo tiempo por conexión en ambas pilas.
+    </p>
+    <p class="warn" style="margin-top:0.7rem">
+      Al comparar tecnologías, cambia <strong>una</strong> variable. Y verifica el recurso escaso
+      midiéndolo en su origen, no deduciéndolo de la configuración.
+    </p>
+  </details>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>Los bugs de concurrencia, por causa raíz</h2>
+    <p>Catorce, agrupados: casi todos son la misma equivocación vista desde otro ángulo.</p>
+  </div>
+
+  <details open>
+    <summary>Familia 1 · «Creo que no bloqueo, pero bloqueo»</summary>
+    <div class="buglist" style="margin-top:0.8rem">
+      <div class="bug">
+        <h3>JDBC dentro de un método que devuelve <code>Uni</code></h3>
+        <p class="sym">WARN Thread vert.x-eventloop-thread-0 has been blocked for 2013 ms</p>
+        <p>Devolver <code>Uni</code> es una promesa tuya. Nadie la verifica. Y no cae esa petición: caen todas las del loop.</p>
+        <p class="fix">Arreglo: <code>@Blocking</code>. Y el aviso solo salta a partir de 2 s — un bloqueo de 100 ms es igual de letal y nunca lo dispara.</p>
+      </div>
+      <div class="bug">
+        <h3><code>@Blocking</code> olvidado en un endpoint que llama a una API lenta</h3>
+        <p class="sym">Intermitente, y solo bajo carga</p>
+        <p>Con poco tráfico, 100 ms de bloqueo no se notan. Con 24 loops y 5 000 req/s, sí.</p>
+      </div>
+      <div class="bug">
+        <h3>Bloquear en <code>@PostConstruct</code></h3>
+        <p class="sym">Arranque lento o timeouts en la primera petición</p>
+        <p>La inicialización perezosa la paga la primera petición, a veces sobre un event loop.</p>
+      </div>
+    </div>
+  </details>
+
+  <details>
+    <summary>Familia 2 · «El contexto no viaja con el trabajo»</summary>
+    <div class="buglist" style="margin-top:0.8rem">
+      <div class="bug">
+        <h3><code>ThreadLocal</code> cruzando un salto de hilo</h3>
+        <p class="sym">El userId del log pertenece a OTRA petición</p>
+        <p>No es un bug de rendimiento: es de <strong>auditoría y seguridad</strong>. Tus logs mienten sobre quién hizo qué, y no aparece jamás en desarrollo porque hace falta concurrencia real.</p>
+      </div>
+      <div class="bug">
+        <h3><code>@Transactional</code> sobre código reactivo</h3>
+        <p class="sym">La transacción no cubre lo que crees</p>
+        <p>JTA ata la transacción al hilo con un <code>ThreadLocal</code>. Si el trabajo salta de hilo, se queda atrás.</p>
+      </div>
+      <div class="bug">
+        <h3>Estado mutable en un recurso REST</h3>
+        <p class="sym">Datos de un usuario en la respuesta de otro</p>
+        <p>Quarkus REST hace los recursos <strong>singleton</strong>. Un campo mutable es estado global compartido.</p>
+      </div>
+    </div>
+  </details>
+
+  <details>
+    <summary>Familia 3 · «El recurso escaso no era el que yo creía»</summary>
+    <div class="buglist" style="margin-top:0.8rem">
+      <div class="bug">
+        <h3>Pool de conexiones menor que la concurrencia real</h3>
+        <p class="sym">p99 por las nubes con la CPU al 10 %</p>
+        <p>La cola ante el pool no aparece en ninguna métrica de la aplicación.</p>
+      </div>
+      <div class="bug">
+        <h3>Llamada HTTP dentro de una transacción</h3>
+        <p class="sym">Pool agotado con poquísimo tráfico</p>
+        <p>La conexión queda retenida toda la llamada remota: 20 conexiones × 2 s = <strong>10 req/s de techo</strong>.</p>
+      </div>
+      <div class="bug">
+        <h3><code>ThreadLocal</code> pesado × miles de virtual threads</h3>
+        <p class="sym">OutOfMemoryError con poco tráfico aparente</p>
+        <p>1 MB por hilo era razonable con 200 hilos, no con 200.000. La respuesta moderna es <code>ScopedValue</code>.</p>
+      </div>
+      <div class="bug">
+        <h3><code>synchronized</code> alrededor de I/O (<em>pinning</em>)</h3>
+        <p class="sym">Los virtual threads no rinden más que los de plataforma</p>
+        <p>Hasta Java 23 fijaba el hilo a su carrier. <strong>JEP 491 lo arregló en Java 24</strong>; JNI y <code>Object.wait()</code> siguen fijando.</p>
+      </div>
+    </div>
+  </details>
+
+  <details>
+    <summary>Y cuatro que no son de código</summary>
+    <div class="buglist" style="margin-top:0.8rem">
+      <div class="bug">
+        <h3><code>Uni</code> que nadie suscribe</h3>
+        <p class="sym">Sin excepción, sin log, sin nada</p>
+        <p>En Mutiny, sin suscripción <strong>no pasa nada</strong>. Tu código simplemente no se ejecutó.</p>
+      </div>
+      <div class="bug">
+        <h3>Coordinated omission al medir</h3>
+        <p class="sym">El benchmark dice p99 = 5 ms; producción dice 2 s</p>
+        <p>La herramienta dejó de enviar mientras el servidor sufría, así que no midió los peores casos.</p>
+      </div>
+      <div class="bug">
+        <h3>Anotación de concurrencia contradictoria</h3>
+        <p class="sym">Compila, arranca y no cambia nada</p>
+        <p>Quarkus la acepta en silencio. No cuesta rendimiento, pero documenta una garantía que no existe.</p>
+      </div>
+      <div class="bug">
+        <h3>Comparar dos cosas cambiando dos variables</h3>
+        <p class="sym">«El reactivo rinde 2,6× peor»</p>
+        <p>Eran dos tamaños de pool distintos disfrazados de dos modelos de concurrencia.</p>
+      </div>
+    </div>
+  </details>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>El veredicto</h2>
+  </div>
+  <div class="cards">
+    <div class="card good">
+      <h3>Virtual threads, por defecto</h3>
+      <p>
+        En Java 21+ dan el escalado del reactivo con el modelo de programación del bloqueante. Y
+        desde JEP 491 ya no sufren el <em>pinning</em> que los lastraba.
+      </p>
+    </div>
+    <div class="card">
+      <h3>Reactivo, cuando de verdad toca</h3>
+      <p>
+        18 331 contra 19 287: un <strong>5 %</strong>, pagado con stack traces inservibles,
+        <code>Uni&lt;&gt;</code> propagándose por todas las firmas y otra capa de persistencia.
+      </p>
+    </div>
+    <div class="card">
+      <h3>Y mide antes de elegir</h3>
+      <p>
+        El recurso escaso casi nunca son los hilos. Si hay una base de datos detrás, es el pool
+        —y entonces los tres modelos dan lo mismo.
+      </p>
+    </div>
+  </div>
+</section>
+
+<div class="pager">
+  <a href="3-persistencia.html"><small>Anterior</small> ← Módulo 3 · Persistencia</a>
+  <a href="5-seguridad.html"><small>Siguiente</small> Módulo 5 · Seguridad →</a>
+</div>
+
+</div>
+
+<script>
+(function () {
+  var reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /* ---------- simulación 1: bloqueante vs virtual ---------- */
+  var MAX = 0.9;           // segundos de línea temporal
+  var WORK = 0.02;         // trabajo de CPU por petición
+  var IO = 0.10;           // espera de I/O
+  var THREADS = 4, REQS = 8;
+  var segs = [];
+
+  function pct(v) { return (v / MAX * 100) + "%"; }
+
+  function seg(cls, start, dur, tag) {
+    var e = document.createElement("div");
+    e.className = "seg " + cls;
+    e.style.left = pct(start);
+    e.style.width = pct(dur);
+    e._start = start; e._dur = dur;
+    var fill = document.createElement("i");
+    e.appendChild(fill);
+    if (tag) {
+      var t = document.createElement("span");
+      t.className = "seg-tag";
+      t.textContent = tag;
+      e.appendChild(t);
+    }
+    return e;
+  }
+
+  // Bloqueante: 4 hilos, cada uno atiende 2 peticiones en serie.
+  // Virtual: los 4 carriers atienden las 8 a la vez porque se desmontan al esperar.
+  function plan(blocking) {
+    var out = [];
+    for (var i = 0; i < REQS; i++) {
+      var tanda = blocking ? Math.floor(i / THREADS) : 0;
+      var t0 = tanda * (WORK * 2 + IO);
+      out.push({ start: t0, cpu1: WORK, io: IO, cpu2: WORK });
+    }
+    return out;
+  }
+
+  function buildLane(sel, blocking) {
+    var rows = document.querySelector(sel + " .rows");
+    var reqs = plan(blocking);
+    reqs.forEach(function (r, i) {
+      var row = document.createElement("div");
+      row.className = "row";
+      var label = document.createElement("span");
+      label.className = "row-label";
+      label.textContent = "petición " + (i + 1);
+      var track = document.createElement("div");
+      track.className = "track";
+      var a = seg("busy", r.start, r.cpu1, "");
+      var b = seg("wait", r.start + r.cpu1, r.io, i === 0 ? "esperando I/O" : "");
+      var c = seg("busy", r.start + r.cpu1 + r.io, r.cpu2, "");
+      [a, b, c].forEach(function (s) { track.appendChild(s); segs.push(s); });
+      row.appendChild(label); row.appendChild(track);
+      rows.appendChild(row);
+    });
+
+    // fila de los hilos portadores
+    var trow = document.createElement("div");
+    trow.className = "row";
+    var tl = document.createElement("span");
+    tl.className = "row-label";
+    tl.innerHTML = "<strong>" + (blocking ? "4 hilos" : "4 carriers") + "</strong>";
+    var tt = document.createElement("div");
+    tt.className = "track thin";
+    if (blocking) {
+      // ocupados de principio a fin: dormidos, pero retenidos
+      var s1 = seg("busy", 0, MAX, "retenidos, durmiendo");
+      tt.appendChild(s1); segs.push(s1);
+    } else {
+      // trabajan a ráfagas y quedan libres durante la espera
+      var s2 = seg("busy", 0, WORK, "");
+      var s3 = seg("free", WORK, IO, "libres para otras peticiones");
+      var s4 = seg("busy", WORK + IO, WORK, "");
+      var s5 = seg("free", WORK * 2 + IO, MAX - (WORK * 2 + IO), "");
+      [s2, s3, s4, s5].forEach(function (s) { tt.appendChild(s); segs.push(s); });
+    }
+    trow.appendChild(tl); trow.appendChild(tt);
+    rows.appendChild(trow);
+
+    var head = document.createElement("div");
+    head.className = "playhead";
+    rows.appendChild(head);
+    rows._head = head;
+    return rows;
+  }
+
+  var laneA = buildLane("#lane-block", true);
+  var laneB = buildLane("#lane-virt", false);
+
+  var ticks = document.getElementById("ticks1");
+  [0, 0.2, 0.4, 0.6, 0.8].forEach(function (v) {
+    var t = document.createElement("span");
+    t.className = "tick";
+    t.style.left = pct(v);
+    t.textContent = Math.round(v * 1000) + " ms";
+    ticks.appendChild(t);
+  });
+
+  function render(t) {
+    segs.forEach(function (s) {
+      var p = (t - s._start) / s._dur;
+      p = p < 0 ? 0 : p > 1 ? 1 : p;
+      s.firstChild.style.transform = "scaleX(" + p + ")";
+      var tag = s.querySelector(".seg-tag");
+      if (tag) tag.style.opacity = p > 0.4 ? "1" : "0";
+    });
+    [laneA, laneB].forEach(function (r) {
+      r._head.style.left = "calc(6.9rem + (100% - 6.9rem) * " + (t / MAX) + ")";
+    });
+  }
+
+  var raf = null, btn = document.getElementById("play1");
+  function run() {
+    if (raf) cancelAnimationFrame(raf);
+    if (reduced) { render(MAX); return; }
+    var t0 = null;
+    btn.textContent = "Reproduciendo…";
+    function step(ts) {
+      if (t0 === null) t0 = ts;
+      var t = (ts - t0) / 1000 * 0.55;   // ralentizado para poder seguirlo
+      if (t >= MAX) { render(MAX); btn.textContent = "Repetir"; raf = null; return; }
+      render(t);
+      raf = requestAnimationFrame(step);
+    }
+    raf = requestAnimationFrame(step);
+  }
+  btn.addEventListener("click", run);
+  render(reduced ? MAX : 0);
+  if (!reduced) setTimeout(run, 600);
+
+  /* ---------- simulación 2: event loops secuestrados ---------- */
+  var LOOPS = 24;
+  var cont = document.getElementById("loops");
+  var estado = document.getElementById("loop-status");
+  var cells = [];
+  for (var i = 0; i < LOOPS; i++) {
+    var c = document.createElement("div");
+    c.style.height = "2.2rem";
+    c.style.borderRadius = "2px";
+    c.style.background = "var(--free)";
+    c.style.transition = "background 0.25s";
+    c.title = "vert.x-eventloop-thread-" + i;
+    cont.appendChild(c);
+    cells.push(c);
+  }
+  var timers = [];
+  function limpiar() { timers.forEach(clearTimeout); timers = []; }
+
+  document.getElementById("loop-run").addEventListener("click", function () {
+    limpiar();
+    cells.forEach(function (c, i) {
+      timers.push(setTimeout(function () {
+        c.style.background = "var(--busy)";
+        if (i === LOOPS - 1) {
+          estado.textContent =
+            "24 de 24 bloqueados · /reactive pasa de 968 a 19,7 req/s · y la CPU está ociosa";
+          estado.style.color = "var(--busy)";
+        } else {
+          estado.textContent = (i + 1) + " de 24 bloqueados · las peticiones de OTROS endpoints se acumulan";
+        }
+      }, reduced ? 0 : i * 90));
+    });
+  });
+
+  document.getElementById("loop-reset").addEventListener("click", function () {
+    limpiar();
+    cells.forEach(function (c) { c.style.background = "var(--free)"; });
+    estado.textContent = "24 event loops · todos disponibles";
+    estado.style.color = "";
+  });
+})();
+</script>
+</body>
+</html>

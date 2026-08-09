@@ -16,6 +16,28 @@ usando Java 25 y Quarkus 3.38, hasta llegar a sistemas distribuidos a escala.
 7. **Las preguntas de repaso se responden** en el [banco de preguntas](PREGUNTAS-RESPUESTAS.md),
    con el razonamiento completo y los trade-offs. Es el material de estudio para entrevistas.
 
+## Documentación interactiva
+
+**[`docs/html/index.html`](html/index.html)** — el curso entero en HTML, con simulaciones que se
+pueden reproducir: los tres modelos de concurrencia compitiendo, el flujo del outbox de punta a
+punta, el circuit breaker abriendo en vivo, la sobreventa. Se abre en el navegador sin servidor ni
+dependencias.
+
+| Página | Qué explica |
+|---|---|
+| [Portada](html/index.html) | Mapa del recorrido y arquitectura |
+| [0 · Fundamentos](html/0-fundamentos.html) | Build time contra runtime, con el arranque animado |
+| [1 · Dominio](html/1-dominio.html) | `sealed` rompiendo el build donde debe |
+| [2 · REST y CDI](html/2-rest.html) | Las dos capas de validación, interactivas |
+| [3 · Persistencia](html/3-persistencia.html) | Paginación, N+1 y *lost update* |
+| [**4 · Concurrencia**](html/4-concurrencia.html) | ★ Los tres modelos animados y los event loops secuestrados |
+| [5 · Seguridad](html/5-seguridad.html) | El JWT claim a claim y la cadena 401/403/400/403 |
+| [6 · Inventario](html/6-inventario.html) | Sobreventa, y el calendario con `EXCLUDE gist` |
+| [**7 · Eventos y Kafka**](html/7-eventos.html) | ★ Outbox, duplicados, particiones y saga, todo en marcha |
+| [8 · Resiliencia](html/8-resiliencia.html) | Circuit breaker en vivo, DLQ y cardinalidad |
+| [9 · Nativo](html/9-produccion.html) | El *image heap* y el cubo de fichas |
+| [**Catálogo de fallos**](html/bugs.html) | Los 32 errores reales, con buscador y filtros |
+
 ## Documentos transversales
 
 | Documento | Para qué |

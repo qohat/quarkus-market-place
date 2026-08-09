@@ -1,0 +1,470 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Inventario y sobreventa — 200 compradores, 1 unidad</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="wrap">
+
+<nav class="topnav">
+  <div class="crumbs"><a href="index.html">Quarkus a alta escala</a> <span>/</span> <span>Módulo 6</span></div>
+  <a href="bugs.html">Catálogo de fallos →</a>
+</nav>
+
+<header>
+  <p class="eyebrow">Módulo 6 · bounded contexts</p>
+  <h1>200 compradores, una unidad</h1>
+  <p class="lede">
+    Tres estrategias contra la sobreventa. Ninguna vende de más — pero una pierde ventas teniendo
+    stock en el almacén, y encima fuga inventario.
+  </p>
+</header>
+
+<section>
+  <div class="prose stack">
+    <h2>La misma palabra, tres significados</h2>
+    <p class="thesis">
+      Un <em>bounded context</em> es un límite dentro del cual un modelo tiene un significado único.
+      Y la idea incómoda es que la misma palabra significa cosas distintas según quién pregunte.
+    </p>
+  </div>
+
+  <div class="tablewrap">
+    <table>
+      <tr><th>Contexto</th><th>Qué es un «listing»</th><th>Qué le importa</th></tr>
+      <tr><td><strong>Catálogo</strong></td><td>Algo que se muestra</td><td>Título, precio, fotos, estado</td></tr>
+      <tr><td><strong>Inventario</strong></td><td>Un contador</td><td>Cuántas quedan, cuántas apartadas</td></tr>
+      <tr><td><strong>Pedidos</strong></td><td>Una línea de compra</td><td>Precio <strong>congelado</strong>, cantidad</td></tr>
+    </table>
+  </div>
+
+  <p>
+    Fíjate en «precio congelado»: si el vendedor sube el precio mañana, tu pedido de ayer no cambia.
+    En Catálogo el precio es un dato vivo; en Pedidos, histórico. <strong>Son cosas distintas que se
+    llaman igual</strong>, y forzar un modelo único produce una clase con treinta campos donde cada
+    uno solo importa a una parte.
+  </p>
+
+  <p class="note">
+    Y la razón de alta escala: los contextos son la <strong>unidad de consistencia</strong>. Dentro,
+    transacción ACID; entre ellos, consistencia eventual y compensaciones. Esa línea decide dónde
+    cabe un <code>@Transactional</code> — y es exactamente lo que el módulo 7 tendrá que cruzar.
+  </p>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>Dónde va la frontera</h2>
+    <p>
+      El catálogo ya tenía <code>availableStock</code>. La opción purista —quitarlo y preguntar a
+      Inventario— tiene un problema serio:
+    </p>
+  </div>
+
+<pre class="bad">GET /listings   →   20 publicaciones por página
+                →   ¿20 consultas a Inventario para pintar «quedan 3»?</pre>
+
+  <p class="warn">
+    Es el N+1 del módulo 3 <strong>cruzando una frontera de contexto</strong>, que mañana puede ser
+    una llamada de red. El error clásico al descomponer un monolito: dibujar bien la frontera y
+    luego atravesarla mil veces por petición.
+  </p>
+
+  <div class="cards">
+    <div class="card good">
+      <h3>Inventario → LA VERDAD</h3>
+      <p>Aquí se reserva y aquí se decide si hay stock.</p>
+    </div>
+    <div class="card">
+      <h3>Catálogo → UNA COPIA</h3>
+      <p>Un número para el escaparate, que puede ir atrasado. Lo sincroniza un evento (módulo 7).</p>
+    </div>
+  </div>
+
+  <p class="thesis">
+    Puedes leer una copia atrasada para <em>mostrar</em>, nunca para <em>decidir</em>.
+  </p>
+
+  <details>
+    <summary>Qué se comparte entre contextos, y qué no</summary>
+    <p style="margin-top:0.6rem">
+      <strong>Identificadores sí, modelos no.</strong> <code>StockItem</code> importa
+      <code>ListingId</code> porque es el punto de encuentro. Pero en Inventario no entra
+      <code>Listing</code>, ni <code>Money</code>, ni el estado de publicación.
+      <strong>La frontera protege los conceptos, no los números.</strong>
+    </p>
+    <p style="margin-top:0.6rem">
+      Tampoco hay clave foránea entre <code>stock_item</code> y <code>listing</code>: daría
+      integridad gratis, pero acopla los contextos a nivel de esquema y el día que Inventario tenga
+      su propia base de datos no podría existir.
+    </p>
+  </details>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>Dos contadores, y por qué hacen falta</h2>
+  </div>
+
+<pre>onHand    = 10    <span class="cm">unidades que existen físicamente</span>
+reserved  =  3    <span class="cm">apartadas para compras en curso, sin cobrar</span>
+<mark>available =  7</mark>    <span class="cm">← lo único vendible</span></pre>
+
+  <div class="cards">
+    <div class="card bad">
+      <h3>Descontar al pagar</h3>
+      <p>El comprador se queda sin stock <strong>después</strong> de haber pagado.</p>
+    </div>
+    <div class="card bad">
+      <h3>Descontar al empezar</h3>
+      <p>Un carrito abandonado bloquea inventario <strong>para siempre</strong>.</p>
+    </div>
+    <div class="card good">
+      <h3>Reservar con caducidad</h3>
+      <p>Ninguna de las dos cosas. Y el barrido devuelve lo que nadie pagó.</p>
+    </div>
+  </div>
+
+  <div class="sim">
+    <div class="sim-head">
+      <div class="ctl">
+        <button id="st-reserve">reserve(3)</button>
+        <button id="st-confirm">confirm(3)</button>
+        <button class="alt" id="st-reset">Reiniciar</button>
+      </div>
+    </div>
+    <div id="st-view" style="display:flex;gap:2rem;flex-wrap:wrap;font-family:var(--mono)"></div>
+    <div id="st-status" class="status">10 unidades, ninguna apartada.</div>
+  </div>
+
+  <p class="win">
+    El detalle contraintuitivo, y está fijado en un test: <strong>confirmar el pago NO cambia lo
+    disponible.</strong> Ya se descontó al reservar. Si <code>available()</code> bajara al
+    confirmar, estarías descontando dos veces.
+  </p>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>El experimento: 200 compradores, 1 unidad</h2>
+    <p>Las tres estrategias, el mismo puerto, la misma prueba.</p>
+  </div>
+
+  <div class="sim">
+    <div class="sim-head">
+      <div class="ctl">
+        <button id="ov-1">1 unidad disponible</button>
+        <button id="ov-50">50 unidades disponibles</button>
+      </div>
+    </div>
+    <div id="ov-view" style="display:flex;flex-direction:column;gap:0.8rem"></div>
+    <div id="ov-status" class="status"></div>
+  </div>
+
+  <div class="tablewrap">
+    <table>
+      <tr><th>Estrategia</th><th class="num">ventas (1 unidad)</th><th class="num">ventas (50 unidades)</th><th class="num">tiempo</th></tr>
+      <tr><td>atomic</td><td class="num">1</td><td class="num"><strong>50</strong></td><td class="num">859 ms</td></tr>
+      <tr><td>pessimistic</td><td class="num">1</td><td class="num"><strong>50</strong></td><td class="num">86 ms</td></tr>
+      <tr><td>optimistic</td><td class="num">1</td><td class="num" style="color:var(--busy)"><strong>13</strong></td><td class="num">114 ms</td></tr>
+    </table>
+  </div>
+
+  <p class="thesis">
+    El bloqueo optimista perdió <strong>37 ventas teniendo mercancía en el almacén</strong>. No es
+    lentitud: es dinero que no entra, con compradores esperando.
+  </p>
+
+  <p class="warn">
+    Y la causa es más sutil de lo que parece: dos compradores que reservan unidades
+    <strong>distintas</strong> —hay 50— escriben igualmente <strong>la misma fila</strong>, así que
+    chocan por la versión. <strong>El conflicto es de fila, no de negocio.</strong> La contención no
+    la crea la escasez: la crea compartir un contador.
+  </p>
+
+  <div class="bug">
+    <h3>Y el hallazgo que no esperaba: fuga de inventario</h3>
+    <p class="sym">optimistic: quedan 4 reservadas de 100 · atomic y pessimistic: 0</p>
+    <p>
+      En el test de carritos abandonados, cuando el <code>release</code> choca por versión
+      <strong>la reserva se queda hecha</strong>. Cuatro unidades que existen, nadie va a comprar y
+      nadie va a liberar.
+    </p>
+    <p class="fix">El inventario se evapora poco a poco, y nada en los logs lo dice.</p>
+  </div>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>La respuesta: <code>UPDATE</code> atómico condicional</h2>
+  </div>
+
+<pre class="good">UPDATE stock_item
+   SET reserved = reserved + :units
+ WHERE listing_id = :id <mark>AND (on_hand - reserved) &gt;= :units</mark></pre>
+
+  <p>
+    Una sola sentencia. No lee antes, no mantiene lock entre sentencias, y la propia base de datos
+    garantiza la atomicidad. <strong>Si afecta a 0 filas, no había stock.</strong> El
+    <code>WHERE</code> <em>es</em> la comprobación.
+  </p>
+
+  <div class="cards">
+    <div class="card">
+      <h3>El puerto declara intención</h3>
+      <p>
+        <code>reserve(id, units)</code> en vez de <code>find</code> + <code>save</code>. Un puerto
+        con find+save <strong>obliga</strong> a leer antes de escribir, y esa ventana <em>es</em> la
+        sobreventa.
+      </p>
+    </div>
+    <div class="card bad">
+      <h3>Y su precio, que es real</h3>
+      <p>
+        La regla queda escrita <strong>dos veces</strong>: en <code>StockItem.reserve()</code> y en
+        ese <code>WHERE</code>. Nada garantiza que sigan de acuerdo dentro de un año.
+      </p>
+    </div>
+  </div>
+
+  <p class="note">
+    Esa duplicación se paga con un test que ejecuta <strong>la misma batería contra las tres
+    implementaciones</strong>. Si dejan de comportarse igual, el build lo dice.
+  </p>
+
+  <div class="prose stack">
+    <h3>Y la última línea de defensa</h3>
+  </div>
+
+<pre class="good">CONSTRAINT stock_item_reserved_within_on_hand CHECK (reserved &lt;= on_hand)</pre>
+
+  <p>
+    El mismo invariante que comprueba el constructor de <code>StockItem</code>, escrito también en
+    la tabla. No es descuido: <strong>la base de datos es el único punto por el que pasan de verdad
+    todas las escrituras</strong>, incluidas las de un script de migración o una consola de soporte
+    a las tres de la mañana. Un 500 es mucho mejor resultado que una venta imposible de servir.
+  </p>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>El otro problema: dos personas, la misma hora</h2>
+    <p>
+      Un producto se agota con un contador. Un servicio no: el recurso escaso es un
+      <strong>intervalo</strong>, y lo que hay que impedir es el <strong>solapamiento</strong>.
+    </p>
+    <p>Aquí no vale el UPDATE atómico: no hay fila que actualizar, hay que <em>insertar</em> comprobando algo sobre las que ya existen.</p>
+  </div>
+
+  <div class="sim">
+    <div class="sim-head">
+      <div class="ctl">
+        <button id="bk-1">10:00 – 11:00</button>
+        <button id="bk-2">10:30 – 11:30 (solapa)</button>
+        <button id="bk-3">11:00 – 12:00 (consecutiva)</button>
+        <button class="alt" id="bk-reset">Reiniciar</button>
+      </div>
+    </div>
+    <div id="bk-view" style="position:relative;height:3.5rem;background:var(--panel-2);border-radius:3px"></div>
+    <div id="bk-status" class="status">Calendario vacío. Prueba a reservar franjas.</div>
+  </div>
+
+<pre class="good">CREATE EXTENSION btree_gist;
+
+CONSTRAINT booking_no_overlap
+    <mark>EXCLUDE USING gist (listing_id WITH =, slot WITH &amp;&amp;)</mark></pre>
+
+  <p class="thesis">
+    «No pueden existir dos filas con el mismo <code>listing_id</code> cuyos intervalos se solapen.»
+    La comprobación ocurre <strong>dentro de la propia inserción</strong>, con la misma garantía que
+    una clave única.
+  </p>
+
+  <div class="metrics">
+    <div class="metric"><span class="n">100</span><span class="l">compradores simultáneos</span></div>
+    <div class="metric hl"><span class="n">1</span><span class="l">reserva</span></div>
+    <div class="metric"><span class="n">99</span><span class="l">rechazos</span></div>
+    <div class="metric"><span class="n">0</span><span class="l">líneas de coordinación en Java</span></div>
+  </div>
+
+  <p class="win">
+    Y lo notable es el <strong>alcance</strong> de esa garantía: se mantiene aunque el código Java
+    esté mal escrito, aunque alguien inserte a mano desde <code>psql</code> y aunque haya veinte
+    instancias desplegadas. <strong>Ningún candado en Java llega tan lejos.</strong>
+  </p>
+
+  <div class="tablewrap">
+    <table>
+      <tr><th>Detalle</th><th>Por qué importa</th></tr>
+      <tr><td><code>btree_gist</code></td><td>GiST no sabe indexar la igualdad de escalares como UUID. La extensión se la enseña.</td></tr>
+      <tr><td><code>tstzrange(ini, fin, '[)')</code></td><td>Abierto por la derecha. Si fuera cerrado, 10–11 y 11–12 se considerarían solapadas y nadie podría encadenar dos citas.</td></tr>
+      <tr><td><code>listing_id WITH =</code></td><td>Acota el solapamiento a cada publicación. Sin él, una reserva bloquearía esa hora en todo el marketplace.</td></tr>
+    </table>
+  </div>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>Idempotencia por diseño del estado</h2>
+    <p>
+      Con varias réplicas, dos barridos pueden coger la misma reserva vencida. La protección no es
+      un candado distribuido:
+    </p>
+  </div>
+
+<pre class="good"><span class="kw">if</span> (status != ReservationStatus.HELD) {
+    <span class="kw">throw new</span> IllegalStateException(<span class="str">"cannot release a reservation in status "</span> + status);
+}</pre>
+
+  <p>
+    Solo se sale de <code>HELD</code>, y solo una vez. El segundo barrido encuentra
+    <code>RELEASED</code> y no devuelve las unidades otra vez.
+  </p>
+
+  <p class="note">
+    <strong>Idempotencia por diseño del estado en lugar de por coordinación entre instancias.</strong>
+    Es exactamente el mismo principio que el módulo 7 usará contra mensajes duplicados de Kafka.
+  </p>
+</section>
+
+<div class="pager">
+  <a href="5-seguridad.html"><small>Anterior</small> ← Módulo 5 · Seguridad</a>
+  <a href="7-eventos.html"><small>Siguiente</small> Módulo 7 · Eventos y Kafka →</a>
+</div>
+
+</div>
+
+<script>
+(function () {
+  /* contadores */
+  var stView = document.getElementById("st-view"), stSt = document.getElementById("st-status");
+  var onHand = 10, reserved = 0;
+  function pintarSt() {
+    stView.innerHTML = "";
+    [["onHand", onHand, "existen físicamente"],
+     ["reserved", reserved, "apartadas"],
+     ["available", onHand - reserved, "vendibles"]].forEach(function (x, i) {
+      var d = document.createElement("div");
+      d.style.cssText = "display:flex;flex-direction:column;gap:0.2rem" + (i === 2 ? ";color:var(--accent)" : "");
+      d.innerHTML = "<span style='font-size:2rem;font-weight:800;line-height:1'>" + x[1] +
+        "</span><span style='font-size:0.75rem;color:var(--ink-soft)'>" + x[0] + " — " + x[2] + "</span>";
+      stView.appendChild(d);
+    });
+  }
+  document.getElementById("st-reserve").addEventListener("click", function () {
+    if (onHand - reserved < 3) { stSt.textContent = "No hay disponibles suficientes."; stSt.style.color = "var(--busy)"; return; }
+    reserved += 3;
+    stSt.textContent = "Reservadas 3. onHand NO cambia: las unidades siguen físicamente ahí, solo dejan de ser vendibles.";
+    stSt.style.color = "";
+    pintarSt();
+  });
+  document.getElementById("st-confirm").addEventListener("click", function () {
+    if (reserved < 3) { stSt.textContent = "No hay 3 unidades reservadas que confirmar."; stSt.style.color = "var(--busy)"; return; }
+    onHand -= 3; reserved -= 3;
+    stSt.textContent = "Confirmado. Bajan los DOS contadores… y available no se ha movido: ya se había descontado al reservar.";
+    stSt.style.color = "var(--free)";
+    pintarSt();
+  });
+  document.getElementById("st-reset").addEventListener("click", function () {
+    onHand = 10; reserved = 0; pintarSt();
+    stSt.textContent = "10 unidades, ninguna apartada."; stSt.style.color = "";
+  });
+  pintarSt();
+
+  /* sobreventa */
+  var ovView = document.getElementById("ov-view"), ovSt = document.getElementById("ov-status");
+  function pintarOv(stock) {
+    var datos = stock === 1
+      ? [["atomic", 1, 199], ["pessimistic", 1, 199], ["optimistic", 1, 199]]
+      : [["atomic", 50, 150], ["pessimistic", 50, 150], ["optimistic", 13, 187]];
+    ovView.innerHTML = "";
+    datos.forEach(function (d) {
+      var row = document.createElement("div");
+      row.style.cssText = "display:flex;align-items:center;gap:0.8rem";
+      var lb = document.createElement("span");
+      lb.style.cssText = "font-family:var(--mono);font-size:0.76rem;width:6rem;flex:none;color:var(--ink-soft)";
+      lb.textContent = d[0];
+      var tr = document.createElement("div");
+      tr.style.cssText = "position:relative;height:1.3rem;flex:1;background:var(--panel-2);border-radius:2px;overflow:hidden";
+      var f = document.createElement("i");
+      var pierde = d[1] < stock;
+      f.style.cssText = "display:block;height:100%;width:" + (d[1] / stock * 100) + "%;background:" +
+        (pierde ? "var(--busy)" : "var(--free)") + ";transition:width .6s";
+      tr.appendChild(f);
+      var n = document.createElement("span");
+      n.style.cssText = "font-family:var(--mono);font-size:0.76rem;width:9rem;flex:none";
+      n.innerHTML = "<strong>" + d[1] + "</strong> / " + stock + " ventas";
+      row.appendChild(lb); row.appendChild(tr); row.appendChild(n);
+      ovView.appendChild(row);
+    });
+    ovSt.textContent = stock === 1
+      ? "Con una sola unidad, las tres son correctas: exactamente 1 venta y 199 rechazos. Lo que cambia es el COSTE de decir que no."
+      : "Con 50 unidades se rompe el empate. El optimista dejó 37 sin vender teniendo stock: dos compradores que quieren unidades DISTINTAS chocan igual, porque escriben la misma fila.";
+    ovSt.style.color = stock === 1 ? "" : "var(--busy)";
+  }
+  document.getElementById("ov-1").addEventListener("click", function () { pintarOv(1); });
+  document.getElementById("ov-50").addEventListener("click", function () { pintarOv(50); });
+  pintarOv(1);
+
+  /* franjas */
+  var bkView = document.getElementById("bk-view"), bkSt = document.getElementById("bk-status");
+  var reservas = [];
+  function pintarBk() {
+    bkView.innerHTML = "";
+    for (var h = 0; h <= 4; h++) {
+      var t = document.createElement("span");
+      t.style.cssText = "position:absolute;bottom:-1.2rem;font-family:var(--mono);font-size:0.65rem;color:var(--ink-soft);left:" +
+        (h * 25) + "%;transform:translateX(-50%)";
+      t.textContent = (10 + h) + ":00";
+      bkView.appendChild(t);
+    }
+    reservas.forEach(function (r) {
+      var d = document.createElement("div");
+      d.style.cssText = "position:absolute;top:0.5rem;height:2rem;border-radius:3px;display:flex;align-items:center;justify-content:center;" +
+        "font-family:var(--mono);font-size:0.7rem;color:#fff;left:" + (r.ini * 25) + "%;width:" + ((r.fin - r.ini) * 25) + "%;background:" +
+        (r.ok ? "var(--free)" : "var(--busy)");
+      d.textContent = r.ok ? "reservada" : "rechazada";
+      bkView.appendChild(d);
+    });
+  }
+  function reservar(ini, fin, etiqueta) {
+    var choca = reservas.some(function (r) { return r.ok && ini < r.fin && fin > r.ini; });
+    reservas.push({ ini: ini, fin: fin, ok: !choca });
+    pintarBk();
+    if (choca) {
+      bkSt.textContent = etiqueta + " → SlotAlreadyBookedException. PostgreSQL la rechazó dentro de la propia inserción, sin que consultáramos nada.";
+      bkSt.style.color = "var(--busy)";
+    } else {
+      bkSt.textContent = etiqueta + " → reservada. " +
+        (ini === 1 ? "Consecutiva, no solapada: el intervalo es [inicio, fin), abierto por la derecha." : "");
+      bkSt.style.color = "var(--free)";
+    }
+  }
+  document.getElementById("bk-1").addEventListener("click", function () { reservar(0, 1, "10:00–11:00"); });
+  document.getElementById("bk-2").addEventListener("click", function () { reservar(0.5, 1.5, "10:30–11:30"); });
+  document.getElementById("bk-3").addEventListener("click", function () { reservar(1, 2, "11:00–12:00"); });
+  document.getElementById("bk-reset").addEventListener("click", function () {
+    reservas = []; pintarBk();
+    bkSt.textContent = "Calendario vacío. Prueba a reservar franjas."; bkSt.style.color = "";
+  });
+  pintarBk();
+})();
+</script>
+</body>
+</html>

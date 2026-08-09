@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>REST y CDI — scopes, DTOs y las dos capas de validación</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="wrap">
+
+<nav class="topnav">
+  <div class="crumbs"><a href="index.html">Quarkus a alta escala</a> <span>/</span> <span>Módulo 2</span></div>
+  <a href="bugs.html">Catálogo de fallos →</a>
+</nav>
+
+<header>
+  <p class="eyebrow">Módulo 2 · el borde HTTP</p>
+  <h1>Dos capas de validación que no se mezclan</h1>
+  <p class="lede">
+    Bean Validation comprueba la <em>forma</em> del payload. El dominio garantiza los
+    <em>invariantes</em>. Confundirlas duplica reglas o deja huecos.
+  </p>
+</header>
+
+<section>
+  <div class="prose stack">
+    <h2>Los recursos REST son singleton</h2>
+    <p>
+      En Quarkus REST, a diferencia de JAX-RS clásico, se instancia <strong>uno solo</strong> y lo
+      comparten todas las peticiones. Ahorra una asignación por petición y trae una regla
+      innegociable:
+    </p>
+    <p class="thesis">Nada de estado mutable en campos. Nunca.</p>
+  </div>
+
+  <div class="tablewrap">
+    <table>
+      <tr><th>Scope</th><th>Vida</th><th>Cuándo</th></tr>
+      <tr><td><code>@ApplicationScoped</code></td><td>Una instancia, con proxy</td><td>El 90 % de los casos</td></tr>
+      <tr><td><code>@Singleton</code></td><td>Una instancia, sin proxy</td><td>Cuando el proxy estorba</td></tr>
+      <tr><td><code>@RequestScoped</code></td><td>Una por petición</td><td>Contexto del que llama</td></tr>
+      <tr><td><code>@Dependent</code></td><td>Una por punto de inyección</td><td>Objetos pequeños sin estado</td></tr>
+      <tr><td><code>@SessionScoped</code></td><td>Una por sesión HTTP</td><td><strong>Nunca</strong>, si quieres escalar horizontalmente</td></tr>
+    </table>
+  </div>
+
+  <p class="note">
+    El <strong>client proxy</strong> es lo que permite inyectar algo de vida corta dentro de algo de
+    vida larga. Por eso <code>UriInfo</code> y <code>JsonWebToken</code> se pueden inyectar en un
+    recurso singleton: lo inyectado es un proxy que resuelve la petición en curso.
+  </p>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>Las dos capas, con un ejemplo que lo aclara</h2>
+    <p>Una moneda. Comprueba qué caza cada capa:</p>
+  </div>
+
+  <div class="sim">
+    <div class="sim-head">
+      <div class="ctl">
+        <button id="v-eur">"EUR"</button>
+        <button id="v-xyz">"XYZ"</button>
+        <button id="v-min">"eur"</button>
+        <button id="v-empty">""</button>
+      </div>
+    </div>
+    <div id="v-rows" style="display:flex;flex-direction:column;gap:0.6rem"></div>
+    <div id="v-status" class="status">Elige un valor para ver qué capa lo rechaza.</div>
+  </div>
+
+  <div class="cards">
+    <div class="card">
+      <h3>Bean Validation — la forma</h3>
+      <p>
+        <code>@Pattern("[A-Z]{3}")</code> comprueba que son tres letras mayúsculas. Da un 400 con
+        un mensaje claro y <strong>todas</strong> las infracciones a la vez.
+      </p>
+    </div>
+    <div class="card">
+      <h3>El dominio — el invariante</h3>
+      <p>
+        Que <code>"XYZ"</code> no exista en ISO 4217 solo lo sabe <code>Currency</code>. Y esa
+        garantía vale para cualquier vía de entrada, no solo HTTP.
+      </p>
+    </div>
+  </div>
+
+  <p class="win">
+    No es duplicar una regla: <strong>el borde da un buen mensaje y el dominio da la garantía</strong>.
+    Si mañana entra un consumidor de Kafka, se salta Bean Validation pero no puede saltarse
+    <code>Money</code>.
+  </p>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>DTOs separados, y por qué no es ceremonia</h2>
+  </div>
+
+<pre><span class="kw">public record</span> CreateProductRequest(
+        <span class="kw">@NotBlank</span> String title,
+        <span class="kw">@Pattern</span>(regexp = <span class="str">"\\d+\\.\\d{2}"</span>) String amount,
+        <span class="kw">@Pattern</span>(regexp = <span class="str">"[A-Z]{3}"</span>) String currency,
+        <span class="kw">@PositiveOrZero</span> <span class="kw">int</span> stock) {
+    <span class="cm">// NO hay campo sellerId. Y esa ausencia es la característica.</span>
+}</pre>
+
+  <p class="warn">
+    Si el cliente pudiera elegir el <code>sellerId</code>, <strong>cualquiera publicaría en nombre de
+    otro</strong>. En el módulo 2 llegaba provisionalmente por una cabecera; en el módulo 5 pasó a
+    salir del token, que es el único sitio del que puede salir.
+  </p>
+
+  <div class="prose stack">
+    <h3>Y el importe viaja como cadena</h3>
+  </div>
+
+<pre class="bad"><span class="cm">// JSON con número:</span>
+{ <span class="str">"amount"</span>: 25.00 }   →   JSON.parse   →   25      <span class="cm">← se perdió el céntimo</span></pre>
+
+<pre class="good"><span class="cm">// JSON con cadena:</span>
+{ <span class="str">"amount"</span>: <span class="str">"25.00"</span> }  →  JSON.parse  →  <span class="str">"25.00"</span>   <span class="cm">← intacto</span></pre>
+
+  <p>
+    JavaScript convierte los números JSON a <code>double</code>. Para dinero eso significa perder
+    la escala y, en importes grandes, precisión.
+  </p>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>Errores con la misma forma: RFC 7807</h2>
+    <p>
+      Todos los fallos de la API responden <code>application/problem+json</code> con la misma
+      estructura, venga de donde venga el error.
+    </p>
+  </div>
+
+<pre>{
+  <span class="str">"type"</span>:     <span class="str">"https://marketplace/problems/not-the-owner"</span>,
+  <span class="str">"title"</span>:    <span class="str">"Not the owner"</span>,
+  <span class="str">"status"</span>:   403,
+  <span class="str">"detail"</span>:   <span class="str">"This listing belongs to another seller"</span>,
+  <span class="str">"instance"</span>: <span class="str">"/listings/a6f0.../archive"</span>
+}</pre>
+
+  <div class="tablewrap">
+    <table>
+      <tr><th>Excepción de dominio</th><th>Se traduce a</th></tr>
+      <tr><td><code>ListingNotFoundException</code></td><td>404</td></tr>
+      <tr><td><code>IllegalArgumentException</code></td><td>400</td></tr>
+      <tr><td><code>IllegalStateException</code></td><td>409 Conflict</td></tr>
+      <tr><td><code>OptimisticLockException</code></td><td>409 Conflict</td></tr>
+      <tr><td><code>NotTheOwnerException</code></td><td>403</td></tr>
+    </table>
+  </div>
+
+  <p class="note">
+    Las excepciones del dominio <strong>no saben nada de HTTP</strong>. Cada adaptador decide qué
+    significan en su protocolo: el consumidor de Kafka del módulo 7 trata la misma excepción como
+    «mensaje a descartar», sin que ninguna decisión contamine a la otra.
+  </p>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>El fallo que enseñó dónde va <code>@Consumes</code></h2>
+  </div>
+
+  <div class="bug">
+    <h3>Seis tests en rojo con 415 Unsupported Media Type</h3>
+    <p class="sym">Expected status code &lt;200&gt; but was &lt;415&gt;</p>
+    <p>
+      <code>@Consumes(APPLICATION_JSON)</code> estaba a nivel de clase, así que se aplicaba también
+      a <code>publish</code>, <code>pause</code> y <code>archive</code> — que son POST
+      <strong>sin cuerpo</strong> y llegan sin <code>Content-Type</code>.
+    </p>
+    <p class="fix">
+      <code>@Consumes</code> describe lo que acepta <em>un método</em>, no una política de clase. Va
+      solo donde hay cuerpo que leer. <code>@Produces</code> sí puede ir en la clase.
+    </p>
+  </div>
+</section>
+
+<div class="pager">
+  <a href="1-dominio.html"><small>Anterior</small> ← Módulo 1 · Dominio</a>
+  <a href="3-persistencia.html"><small>Siguiente</small> Módulo 3 · Persistencia →</a>
+</div>
+
+</div>
+
+<script>
+(function () {
+  var rows = document.getElementById("v-rows");
+  var st = document.getElementById("v-status");
+
+  function pintar(valor, pasaForma, pasaDominio, nota) {
+    rows.innerHTML = "";
+    var capas = [
+      { n: "1 · Bean Validation — @Pattern(\"[A-Z]{3}\")", ok: pasaForma,
+        msg: pasaForma ? "pasa" : "400 · currency must be a 3-letter ISO code" },
+      { n: "2 · Dominio — Currency.getInstance(...)", ok: pasaDominio, skip: !pasaForma,
+        msg: !pasaForma ? "no llega a ejecutarse" : (pasaDominio ? "pasa" : "400 · Unknown currency code") }
+    ];
+    capas.forEach(function (c) {
+      var d = document.createElement("div");
+      var color = c.skip ? "var(--panel-2)" : (c.ok ? "var(--good-soft)" : "var(--bad-soft)");
+      var borde = c.skip ? "var(--line)" : (c.ok ? "var(--free)" : "var(--busy)");
+      d.style.cssText = "padding:0.6rem 0.9rem;border-radius:3px;background:" + color +
+        ";border-left:3px solid " + borde + ";opacity:" + (c.skip ? "0.5" : "1");
+      d.innerHTML = "<div style='font-family:var(--sans);font-weight:650;font-size:0.88rem'>" + c.n +
+        "</div><div style='font-family:var(--mono);font-size:0.75rem;color:var(--ink-soft)'>" + c.msg + "</div>";
+      rows.appendChild(d);
+    });
+    st.textContent = "currency = " + valor + " · " + nota;
+    st.style.color = (pasaForma && pasaDominio) ? "var(--free)" : "var(--busy)";
+  }
+
+  document.getElementById("v-eur").addEventListener("click", function () {
+    pintar('"EUR"', true, true, "válida en las dos capas.");
+  });
+  document.getElementById("v-xyz").addEventListener("click", function () {
+    pintar('"XYZ"', true, false,
+      "TIENE la forma correcta, así que Bean Validation la deja pasar. Que no exista en ISO 4217 solo lo sabe el dominio.");
+  });
+  document.getElementById("v-min").addEventListener("click", function () {
+    pintar('"eur"', false, false, "la caza el borde, con un mensaje claro y sin llegar al dominio.");
+  });
+  document.getElementById("v-empty").addEventListener("click", function () {
+    pintar('""', false, false, "igual: forma incorrecta, 400 inmediato.");
+  });
+  pintar('"EUR"', true, true, "válida en las dos capas.");
+})();
+</script>
+</body>
+</html>

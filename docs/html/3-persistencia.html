@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Persistencia — Flyway, paginación y el N+1 invisible</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="wrap">
+
+<nav class="topnav">
+  <div class="crumbs"><a href="index.html">Quarkus a alta escala</a> <span>/</span> <span>Módulo 3</span></div>
+  <a href="bugs.html">Catálogo de fallos →</a>
+</nav>
+
+<header>
+  <p class="eyebrow">Módulo 3 · persistencia</p>
+  <h1>El esquema es el contrato</h1>
+  <p class="lede">
+    Flyway manda e Hibernate obedece. Y el bug más caro de esta capa no rompe nada: solo hace que
+    la aplicación vaya lenta cuando ya hay datos de verdad.
+  </p>
+</header>
+
+<section>
+  <div class="prose stack">
+    <h2>Quién manda sobre el esquema</h2>
+  </div>
+
+  <div class="cards">
+    <div class="card bad">
+      <h3><code>drop-and-create</code></h3>
+      <p>
+        Hibernate deduce las tablas de tus entidades. Cómodo para empezar y una trampa a medio
+        plazo: el esquema real acaba siendo lo que Hibernate improvise, sin control de versiones.
+      </p>
+    </div>
+    <div class="card good">
+      <h3><code>validate</code> + Flyway</h3>
+      <p>
+        Las migraciones crean el esquema; Hibernate solo <strong>comprueba que las entidades
+        encajan</strong> al arrancar. Si añades un campo y olvidas la migración, no arranca.
+      </p>
+    </div>
+  </div>
+
+  <div class="bug">
+    <h3>Y esa red de seguridad se cobró enseguida</h3>
+    <p class="sym">Schema validation: wrong column type in price_currency: found [bpchar], expecting [char(3)]</p>
+    <p>
+      <code>CHAR(3)</code> en PostgreSQL es <code>bpchar</code>: rellena con espacios hasta la
+      longitud fijada. Casi nunca es lo que quieres.
+    </p>
+    <p class="fix">
+      <code>VARCHAR(3)</code> en la migración. Lo detectó <code>validate</code>, que fue justo su
+      razón de ser.
+    </p>
+  </div>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>Paginación: el desempate no es estético</h2>
+    <p>
+      Con <code>ORDER BY title</code> a secas, dos publicaciones tituladas igual quedan en un orden
+      que PostgreSQL <strong>no garantiza</strong> y puede cambiar entre consultas.
+    </p>
+  </div>
+
+  <div class="sim">
+    <div class="sim-head">
+      <div class="ctl">
+        <button id="pg-bad">ORDER BY title</button>
+        <button id="pg-good" aria-pressed="true">ORDER BY title, id</button>
+      </div>
+    </div>
+    <div id="pg-view" style="display:grid;grid-template-columns:1fr 1fr;gap:1rem"></div>
+    <div id="pg-status" class="status"></div>
+  </div>
+
+  <p class="warn">
+    Un elemento que estaba en la página 1 <strong>reaparece</strong> en la 2, y otro desaparece sin
+    que nadie haya tocado nada. Es un bug clásico, difícil de reproducir y que solo se manifiesta
+    con datos reales. <strong>Toda consulta paginada necesita un orden total.</strong>
+  </p>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>El N+1, y por qué ningún test funcional lo detecta</h2>
+    <p class="thesis">
+      Porque <strong>el resultado es correcto</strong>. El N+1 no es un bug de comportamiento: es un
+      bug de coste.
+    </p>
+  </div>
+
+  <div class="sim">
+    <div class="sim-head">
+      <div class="ctl">
+        <button id="n1-20">Con 20 filas (tu test)</button>
+        <button id="n1-5000">Con 5 000 filas (producción)</button>
+      </div>
+    </div>
+    <div id="n1-view" style="display:flex;flex-direction:column;gap:0.8rem"></div>
+    <div id="n1-status" class="status"></div>
+  </div>
+
+  <div class="cards">
+    <div class="card">
+      <h3>No hay excepción ni log</h3>
+      <p>Son consultas legítimas y rápidas cada una por separado.</p>
+    </div>
+    <div class="card">
+      <h3>Invisible con pocos datos</h3>
+      <p>Con 20 filas, 21 consultas tardan milisegundos. El problema aparece con datos de verdad.</p>
+    </div>
+    <div class="card">
+      <h3>Depende del contexto, no del código</h3>
+      <p>El mismo bucle cuesta 2 o 40 consultas según lo que la sesión hubiera cargado antes.</p>
+    </div>
+  </div>
+
+  <div class="prose stack">
+    <h3>La defensa: presupuesto de consultas</h3>
+    <p>
+      Un test que no asegura <em>qué</em> devuelve el código, sino <em>cuánto cuesta</em>. Con las
+      estadísticas de Hibernate, un N+1 pasa de problema invisible a build rojo.
+    </p>
+  </div>
+
+<pre class="good"><span class="kw">private long</span> consultasDe(Runnable accion) {
+    <span class="kw">var</span> stats = sessionFactory.getStatistics();
+    stats.clear();
+    accion.run();
+    <span class="kw">return</span> stats.getPrepareStatementCount();
+}
+
+<span class="cm">// La aserción ROBUSTA no es "exactamente 2 consultas" sino:</span>
+assertEquals(consultasDe(cargar20), consultasDe(cargar100),
+        <span class="str">"el número de consultas no debe crecer con el volumen"</span>);</pre>
+
+  <details>
+    <summary>El N+1 que no ocurrió — el hallazgo más raro del módulo</summary>
+    <p style="margin-top:0.6rem">
+      El primer test escrito para demostrar un N+1 <strong>falló esperando más de 20 consultas y
+      obtuvo 2</strong>. La caché de primer nivel de Hibernate se lo había tragado: los objetos ya
+      estaban en la sesión, así que el bucle no volvió a la base de datos.
+    </p>
+    <p class="warn" style="margin-top:0.7rem">
+      <strong>El mismo bucle cuesta 2 o 40 consultas según lo que la sesión cargara antes.</strong>
+      Por eso el N+1 es tan escurridizo: un cambio inocuo aguas arriba lo enciende sin que nadie
+      toque el bucle.
+    </p>
+  </details>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>Bloqueo optimista: el <em>lost update</em></h2>
+    <p>
+      Dos peticiones leen la misma fila, ambas deciden, ambas escriben. La segunda pisa a la
+      primera <strong>sin que nadie se entere</strong>.
+    </p>
+  </div>
+
+  <div class="sim">
+    <div class="sim-head">
+      <div class="ctl">
+        <button id="lu-none">Sin @Version</button>
+        <button id="lu-ver" aria-pressed="true">Con @Version</button>
+      </div>
+    </div>
+    <div id="lu-view" style="display:flex;flex-direction:column;gap:0.5rem"></div>
+    <div id="lu-status" class="status"></div>
+  </div>
+
+  <p class="note">
+    Hibernate añade <code>AND version = ?</code> al <code>UPDATE</code>. Si afecta a 0 filas,
+    alguien se adelantó: <code>OptimisticLockException</code> → <strong>409 Conflict</strong>, no un
+    500. El cliente puede releer y reintentar sabiendo qué pasó.
+  </p>
+
+  <p class="warn">
+    En el módulo 6 esto se pone a prueba de verdad, y se descubre que el bloqueo optimista
+    <strong>pierde ventas</strong> bajo contención aunque haya stock de sobra.
+  </p>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>Otras decisiones del módulo</h2>
+  </div>
+  <div class="tablewrap">
+    <table>
+      <tr><th>Decisión</th><th>Por qué</th></tr>
+      <tr><td><code>EnumType.STRING</code>, nunca <code>ORDINAL</code></td><td>Reordenar el enum cambiaría el significado de todas las filas ya escritas.</td></tr>
+      <tr><td><code>@Transactional</code> en el caso de uso</td><td>La transacción delimita una unidad de trabajo del <em>negocio</em>. En el repositorio, una operación abriría tres transacciones distintas.</td></tr>
+      <tr><td>Entidades separadas del dominio</td><td>JPA exige constructor vacío y mutabilidad; los records del dominio son inmutables.</td></tr>
+      <tr><td><code>SINGLE_TABLE</code> con discriminador</td><td>Una tabla para productos y servicios, con <code>CHECK</code> condicionales por tipo.</td></tr>
+      <tr><td>Índice <strong>parcial</strong> para lo visible</td><td>Solo indexa las publicaciones que un comprador puede ver, no el histórico entero.</td></tr>
+    </table>
+  </div>
+
+  <div class="bug">
+    <h3>Y un choque de Java que enseña más de lo que parece</h3>
+    <p class="sym">PanacheListingRepository is not abstract and does not override abstract method count()</p>
+    <p>
+      Java no elige entre un método <code>abstract</code> de una interfaz y un <code>default</code>
+      de otra sin relación entre ellas. Y el arreglo evidente —llamar a
+      <code>PanacheRepositoryBase.super.count()</code>— falló en runtime:
+      <em>«this method is normally automatically overridden in subclasses»</em>, porque declararlo
+      te saca de la generación de bytecode de Quarkus.
+    </p>
+    <p class="fix">Consulta directa con el <code>EntityManager</code>.</p>
+  </div>
+</section>
+
+<div class="pager">
+  <a href="2-rest.html"><small>Anterior</small> ← Módulo 2 · REST y CDI</a>
+  <a href="4-concurrencia.html"><small>Siguiente</small> Módulo 4 · Concurrencia →</a>
+</div>
+
+</div>
+
+<script>
+(function () {
+  /* paginación */
+  var pgView = document.getElementById("pg-view");
+  var pgSt = document.getElementById("pg-status");
+  function pintarPg(total) {
+    var p1 = total ? ["Teclado (id a3)", "Teclado (id b7)"] : ["Teclado (id b7)", "Teclado (id a3)"];
+    var p2 = total ? ["Teclado (id c1)", "Ratón"] : ["Teclado (id b7)", "Ratón"];
+    pgView.innerHTML = "";
+    [["página 1", p1], ["página 2", p2]].forEach(function (pg) {
+      var col = document.createElement("div");
+      col.style.cssText = "border:1px solid var(--line);border-radius:3px;padding:0.7rem;background:var(--panel-2)";
+      var h = document.createElement("div");
+      h.style.cssText = "font-family:var(--mono);font-size:0.7rem;color:var(--ink-soft);margin-bottom:0.5rem";
+      h.textContent = pg[0];
+      col.appendChild(h);
+      pg[1].forEach(function (it) {
+        var b = document.createElement("div");
+        var dup = !total && it === "Teclado (id b7)";
+        b.style.cssText = "font-family:var(--mono);font-size:0.78rem;padding:0.3rem 0.5rem;margin-bottom:0.3rem;border-radius:2px;background:" +
+          (dup ? "var(--bad-soft)" : "var(--panel)");
+        b.textContent = it + (dup ? "  ← ¡repetido!" : "");
+        col.appendChild(b);
+      });
+      pgView.appendChild(col);
+    });
+    if (total) {
+      pgSt.textContent = "Orden total: cada fila aparece exactamente una vez. La paginación es correcta.";
+      pgSt.style.color = "var(--free)";
+    } else {
+      pgSt.textContent = "Sin desempate, b7 sale en las DOS páginas y c1 no sale en ninguna. Nadie ha tocado los datos.";
+      pgSt.style.color = "var(--busy)";
+    }
+  }
+  document.getElementById("pg-good").addEventListener("click", function () {
+    this.setAttribute("aria-pressed", "true");
+    document.getElementById("pg-bad").setAttribute("aria-pressed", "false");
+    pintarPg(true);
+  });
+  document.getElementById("pg-bad").addEventListener("click", function () {
+    this.setAttribute("aria-pressed", "true");
+    document.getElementById("pg-good").setAttribute("aria-pressed", "false");
+    pintarPg(false);
+  });
+  pintarPg(true);
+
+  /* N+1 */
+  var n1View = document.getElementById("n1-view");
+  var n1St = document.getElementById("n1-status");
+  function pintarN1(n) {
+    n1View.innerHTML = "";
+    var consultas = n + 1;
+    var ms = Math.round(consultas * 0.9);
+    var barra = document.createElement("div");
+    barra.style.cssText = "height:1.4rem;background:var(--panel-2);border-radius:2px;overflow:hidden";
+    var f = document.createElement("i");
+    f.style.cssText = "display:block;height:100%;background:" + (n > 100 ? "var(--busy)" : "var(--free)") +
+      ";width:" + Math.min(100, consultas / 50) + "%;transition:width .5s";
+    barra.appendChild(f);
+    var txt = document.createElement("div");
+    txt.style.cssText = "font-family:var(--mono);font-size:0.85rem";
+    txt.innerHTML = "<strong>" + consultas + "</strong> consultas · ~" + ms + " ms";
+    n1View.appendChild(txt);
+    n1View.appendChild(barra);
+    if (n > 100) {
+      n1St.textContent = "El test seguiría PASANDO: devuelve exactamente los mismos datos. Solo que ahora tarda cinco segundos.";
+      n1St.style.color = "var(--busy)";
+    } else {
+      n1St.textContent = "21 consultas en 19 ms. Ningún test lo nota, ningún log lo menciona.";
+      n1St.style.color = "";
+    }
+  }
+  document.getElementById("n1-20").addEventListener("click", function () { pintarN1(20); });
+  document.getElementById("n1-5000").addEventListener("click", function () { pintarN1(5000); });
+  pintarN1(20);
+
+  /* lost update */
+  var luView = document.getElementById("lu-view");
+  var luSt = document.getElementById("lu-status");
+  function pintarLu(conVersion) {
+    var pasos = [
+      { t: "A lee stock = 10 (version 3)", ok: true },
+      { t: "B lee stock = 10 (version 3)", ok: true },
+      { t: "A escribe stock = 9  ·  UPDATE ... WHERE version = 3  →  1 fila", ok: true },
+      conVersion
+        ? { t: "B escribe stock = 8  ·  UPDATE ... WHERE version = 3  →  0 filas  →  409 Conflict", ok: false, good: true }
+        : { t: "B escribe stock = 8  ·  UPDATE sin comprobar  →  1 fila", ok: false }
+    ];
+    luView.innerHTML = "";
+    pasos.forEach(function (p) {
+      var d = document.createElement("div");
+      var bg = p.ok ? "var(--panel-2)" : (p.good ? "var(--accent-soft)" : "var(--bad-soft)");
+      d.style.cssText = "font-family:var(--mono);font-size:0.78rem;padding:0.45rem 0.7rem;border-radius:3px;background:" + bg;
+      d.textContent = p.t;
+      luView.appendChild(d);
+    });
+    if (conVersion) {
+      luSt.textContent = "El conflicto se detecta y se comunica. B puede releer y decidir con datos frescos.";
+      luSt.style.color = "var(--free)";
+    } else {
+      luSt.textContent = "Stock final: 8. La venta de A se perdió y NADIE se enteró. Eso es un lost update.";
+      luSt.style.color = "var(--busy)";
+    }
+  }
+  document.getElementById("lu-ver").addEventListener("click", function () {
+    this.setAttribute("aria-pressed", "true");
+    document.getElementById("lu-none").setAttribute("aria-pressed", "false");
+    pintarLu(true);
+  });
+  document.getElementById("lu-none").addEventListener("click", function () {
+    this.setAttribute("aria-pressed", "true");
+    document.getElementById("lu-ver").setAttribute("aria-pressed", "false");
+    pintarLu(false);
+  });
+  pintarLu(true);
+})();
+</script>
+</body>
+</html>

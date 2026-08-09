@@ -1,0 +1,372 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Seguridad — OIDC, JWT y el fallo número 1 de OWASP</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="wrap">
+
+<nav class="topnav">
+  <div class="crumbs"><a href="index.html">Quarkus a alta escala</a> <span>/</span> <span>Módulo 5</span></div>
+  <a href="bugs.html">Catálogo de fallos →</a>
+</nav>
+
+<header>
+  <p class="eyebrow">Módulo 5 · seguridad</p>
+  <h1>El rol no es la propiedad</h1>
+  <p class="lede">
+    <code>@RolesAllowed("seller")</code> comprueba que eres <em>un</em> vendedor. No comprueba que
+    seas <em>el</em> vendedor de esa publicación. Esa diferencia encabeza el OWASP API Top 10.
+  </p>
+</header>
+
+<section>
+  <div class="prose stack">
+    <h2>Las siglas, en orden histórico</h2>
+    <p>Cada una nació para arreglar una carencia de la anterior.</p>
+  </div>
+
+  <div class="cards">
+    <div class="card">
+      <h3>OAuth 2.0</h3>
+      <p>
+        <strong>Autorización delegada</strong>: dar acceso a un tercero sin darle tu contraseña.
+        Y no sabe quién eres — dice «el portador puede leer ventas», no «el portador es Qohat».
+      </p>
+    </div>
+    <div class="card">
+      <h3>OIDC</h3>
+      <p>
+        Una capa fina encima que estandariza la <strong>identidad</strong>: ID token, endpoint
+        <code>/userinfo</code> y descubrimiento automático. OIDC = OAuth 2.0 + identidad.
+      </p>
+    </div>
+    <div class="card">
+      <h3>JWT</h3>
+      <p>
+        Solo un <strong>formato</strong> de token. Puedes hacer OAuth sin JWT y usar JWT sin OAuth.
+        Tres bloques en base64 y una firma.
+      </p>
+    </div>
+  </div>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>Un token real, campo por campo</h2>
+    <p>Pulsa cada línea para ver qué hace.</p>
+  </div>
+
+  <div class="sim">
+    <div id="jwt-rows" style="display:flex;flex-direction:column;gap:0.25rem"></div>
+    <div id="jwt-exp" class="note" style="margin-top:0.5rem">Selecciona un claim.</div>
+  </div>
+
+  <p class="warn">
+    El payload <strong>no está cifrado, solo codificado</strong>. Cualquiera con el token lee sus
+    claims pegándolo en jwt.io. Un JWT no es un secreto: es un documento firmado, como un pasaporte.
+  </p>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>Por qué JWT, de verdad</h2>
+  </div>
+
+<pre>SESIÓN CLÁSICA                          JWT
+cookie → id de sesión                   cabecera → token firmado
+      ↓                                        ↓
+consulta a un almacén compartido        verificación de la FIRMA
+      ↓                                  con una clave pública ya descargada
+<span class="cm">una llamada de red por petición</span>         <mark>cero llamadas de red</mark></pre>
+
+  <p class="thesis">
+    El servicio valida el token él solo. Con 30 microservicios, la alternativa —un almacén central
+    de sesiones consultado en cada petición— es un cuello de botella y un punto único de fallo.
+  </p>
+
+  <details>
+    <summary>Y el precio: un JWT no se puede revocar</summary>
+    <p style="margin-top:0.6rem">
+      Es el reverso exacto de esa autonomía. Si echas a alguien, su token sigue siendo
+      criptográficamente válido hasta que expire. Por eso los access tokens duran minutos —el
+      nuestro, 10— y existen los <em>refresh tokens</em>, que sí son revocables porque canjearlos
+      obliga a pasar por el emisor.
+    </p>
+    <p style="margin-top:0.6rem">
+      Alternativas más caras: lista de revocación por <code>jti</code>, o introspección en cada
+      petición —que renuncia justamente a la ventaja que te llevó a JWT—.
+    </p>
+  </details>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>Los tres niveles de control de acceso</h2>
+    <p>Y el tercero no te lo da nadie hecho.</p>
+  </div>
+
+  <div class="sim">
+    <div class="sim-head">
+      <div class="ctl">
+        <button id="ac-anon">Sin token</button>
+        <button id="ac-buyer">Token de comprador</button>
+        <button id="ac-rival">Vendedor · publicación AJENA</button>
+        <button id="ac-owner">Vendedor · publicación PROPIA</button>
+      </div>
+    </div>
+    <div id="ac-chain" style="display:flex;flex-direction:column;gap:0.4rem"></div>
+    <div id="ac-status" class="status">POST /listings/{id}/archive · elige quién llama.</div>
+  </div>
+
+  <div class="tablewrap">
+    <table>
+      <tr><th>Nivel</th><th>Pregunta</th><th>Código</th><th>Quién lo da</th></tr>
+      <tr><td>Autenticación</td><td>¿quién eres?</td><td>401</td><td>quarkus-oidc</td></tr>
+      <tr><td>Autorización por rol</td><td>¿qué tipo de usuario eres?</td><td>403</td><td><code>@RolesAllowed</code></td></tr>
+      <tr><td><strong>Autorización por recurso</strong></td><td><strong>¿es TUYO esto?</strong></td><td>403</td><td><strong>tú, en el caso de uso</strong></td></tr>
+    </table>
+  </div>
+
+  <p class="warn">
+    El tercero se llama <strong>BOLA</strong> (Broken Object Level Authorization) y es el riesgo
+    <strong>número 1</strong> del OWASP API Security Top 10. No lo detecta ninguna herramienta
+    automática: desde fuera, la petición es indistinguible de una legítima.
+  </p>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>Dónde va la comprobación de propiedad</h2>
+    <p>En el <strong>caso de uso</strong>, no en el recurso REST. Por tres razones:</p>
+  </div>
+
+  <div class="cards">
+    <div class="card">
+      <h3>Es una regla de negocio</h3>
+      <p>Quién puede cambiar qué no es un detalle de transporte.</p>
+    </div>
+    <div class="card">
+      <h3>Protege todas las puertas</h3>
+      <p>Una comprobación en la capa HTTP solo protege HTTP. El consumidor de Kafka entraría por detrás.</p>
+    </div>
+    <div class="card">
+      <h3>Se testea sin Quarkus</h3>
+      <p>Los cuatro tests de propiedad corren en milisegundos, sin token y sin Keycloak.</p>
+    </div>
+  </div>
+
+<pre class="good"><span class="kw">private</span> Listing transitionTo(ListingId id, ListingStatus nuevo, <mark>SellerId solicitante</mark>) {
+    <span class="kw">var</span> listing = byId(id);                          <span class="cm">// 404 si no existe</span>
+    <span class="kw">if</span> (!listing.sellerId().equals(solicitante)) {
+        <span class="kw">throw new</span> NotTheOwnerException(id, solicitante);  <span class="cm">// 403 si no es tuya</span>
+    }
+    repository.save(listing.withStatus(nuevo));
+    <span class="kw">return</span> ...;
+}</pre>
+
+  <p class="note">
+    Un solo punto: <code>publish</code>, <code>pause</code> y <code>archive</code> pasan todos por
+    aquí. Añadir mañana <em>destacar</em> obliga a pasar por el mismo sitio, así que
+    <strong>nace protegida</strong>. Una comprobación copiada tres veces es una que alguien olvidará
+    la cuarta.
+  </p>
+
+  <p class="win">
+    Y la identidad entra como <strong>parámetro explícito</strong>, no inyectada: la firma declara
+    la dependencia, así que es imposible olvidarla. Al cambiarla, el compilador señaló exactamente
+    los tres sitios que había que tocar.
+  </p>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>403 o 404: cuándo mentir</h2>
+  </div>
+  <div class="cards">
+    <div class="card">
+      <h3>403 Forbidden</h3>
+      <p>«Existe, pero no es tuyo». Honesto con el dueño legítimo que se equivocó de cuenta.</p>
+    </div>
+    <div class="card">
+      <h3>404 Not Found</h3>
+      <p>Miente a propósito. Impide <strong>enumerar</strong> qué identificadores existen.</p>
+    </div>
+  </div>
+  <p>
+    Elegimos <strong>403</strong> porque las publicaciones ya son públicas vía
+    <code>GET /listings/{id}</code>: fingir que no existe no oculta nada comprobable con otra
+    petición. Para los pedidos, que sí son privados para leer, la elección correcta sería 404.
+  </p>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>Lo que enseñaron los 21 tests en rojo</h2>
+    <p>Al activar la seguridad, 21 tests que esperaban 400 empezaron a devolver 401.</p>
+  </div>
+
+  <pre>401 autenticación → 403 rol → 400 validación → 403 propiedad</pre>
+
+  <p class="thesis">
+    La seguridad se evalúa <strong>antes</strong> que la validación. Validar el cuerpo de un anónimo
+    es trabajo regalado, y sus mensajes de error son un mapa gratis de tu API para quien no debería
+    estar ahí.
+  </p>
+
+  <div class="buglist">
+    <div class="bug">
+      <h3><code>@Nested</code> no hereda las extensiones de Quarkus — segunda vez</h3>
+      <p class="sym">21 tests con 401 · en el módulo 3 fueron 13 errores de despliegue</p>
+      <p>Módulo 3: se perdió <code>@TestTransaction</code>. Módulo 5: <code>@TestSecurity</code>.</p>
+      <p class="fix">Repetir la anotación en cada clase anidada, o aplanar el fichero.</p>
+    </div>
+    <div class="bug">
+      <h3>Los roles no estaban donde Quarkus los busca</h3>
+      <p class="sym">Todo devuelve 403 aunque el token traiga los roles</p>
+      <p>
+        Con el scope <code>microprofile-jwt</code> llegan en <code>groups</code>. Un Keycloak de
+        producción suele ponerlos en <code>realm_access.roles</code>, y entonces la identidad llega
+        <strong>sin ningún rol</strong>: autenticado y rechazado en todas partes.
+      </p>
+      <p class="fix"><code>quarkus.oidc.roles.role-claim-path=realm_access/roles</code></p>
+    </div>
+    <div class="bug">
+      <h3>Un test intermitente de firma manipulada</h3>
+      <p class="sym">Pasaba o fallaba según el token que tocara</p>
+      <p>
+        Cambiar el <strong>último</strong> carácter de una firma base64 a veces no cambia los bits:
+        los caracteres finales codifican relleno que se descarta al decodificar.
+      </p>
+      <p class="fix">Alterar un carácter del medio.</p>
+    </div>
+  </div>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>Tests de seguridad en tres capas</h2>
+  </div>
+  <div class="tablewrap">
+    <table>
+      <tr><th>Capa</th><th>Cómo autentica</th><th>Qué prueba</th><th>Coste</th></tr>
+      <tr><td>Dominio</td><td>nada</td><td><strong>las reglas de propiedad</strong></td><td>ms</td></tr>
+      <tr><td><code>@TestSecurity</code></td><td>identidad construida a mano</td><td>códigos 401/403/404 y qué se filtra</td><td>rápido</td></tr>
+      <tr><td><strong>Token real</strong></td><td>Keycloak de Dev Services</td><td><strong>el cableado</strong>: firma, emisor, claim de roles</td><td>segundos</td></tr>
+    </table>
+  </div>
+
+  <p class="warn">
+    La tercera capa es la que casi nadie escribe y la que evita el desastre.
+    <code>@TestSecurity</code> <strong>se salta toda la validación por diseño</strong>: con solo esa
+    capa, un <code>role-claim-path</code> mal configurado deja la suite en verde y la aplicación
+    rechazando a todos sus usuarios en producción.
+  </p>
+</section>
+
+<div class="pager">
+  <a href="4-concurrencia.html"><small>Anterior</small> ← Módulo 4 · Concurrencia</a>
+  <a href="6-inventario.html"><small>Siguiente</small> Módulo 6 · Inventario →</a>
+</div>
+
+</div>
+
+<script>
+(function () {
+  /* JWT */
+  var claims = [
+    ["exp", "1786226629", "Caduca en 600 segundos. No es tacañería: es la ÚNICA defensa contra un token robado, porque un JWT no se puede revocar."],
+    ["iat", "1786226029", "Cuándo se emitió."],
+    ["jti", "onrtro:5079…", "Identificador único del token. Sirve para listas de revocación, si decides pagar ese precio."],
+    ["iss", "http://localhost:49735/realms/quarkus", "Quién lo emitió. Quarkus comprueba que coincida con el emisor configurado."],
+    ["sub", "0b1d1439-167f-43b3-9fda-717f82cd7581", "EL VENDEDOR. Es el único identificador INMUTABLE del token: los nombres de usuario y los emails cambian. Si el catálogo colgara del email, cambiarlo te haría perder tus publicaciones. Y aquí ya es un UUID, así que SellerId.of(sub) funciona directo."],
+    ["azp", "quarkus-app", "Qué aplicación pidió el token."],
+    ["scope", "microprofile-jwt", "Y esto decide DÓNDE van los roles. Con este scope, en `groups`."],
+    ["upn", "vendedora", "El nombre de usuario. Tentador y equivocado: cambia."],
+    ["groups", "[\"seller\"]", "LOS ROLES. Aquí es donde Quarkus los busca de fábrica. Un Keycloak de producción suele ponerlos en realm_access.roles, y sin configurarlo @RolesAllowed rechaza a todo el mundo."]
+  ];
+  var jr = document.getElementById("jwt-rows"), je = document.getElementById("jwt-exp");
+  claims.forEach(function (c) {
+    var d = document.createElement("div");
+    d.style.cssText = "font-family:var(--mono);font-size:0.78rem;padding:0.35rem 0.6rem;border-radius:3px;cursor:pointer;transition:background .15s";
+    d.innerHTML = "<span style='color:var(--info)'>\"" + c[0] + "\"</span>: <span style='color:var(--free)'>" + c[1] + "</span>";
+    d.addEventListener("click", function () {
+      Array.prototype.forEach.call(jr.children, function (x) { x.style.background = ""; });
+      d.style.background = "var(--accent-soft)";
+      je.innerHTML = "<strong>" + c[0] + "</strong> — " + c[2];
+    });
+    d.addEventListener("mouseenter", function () { if (d.style.background === "") d.style.background = "var(--panel-2)"; });
+    d.addEventListener("mouseleave", function () { if (d.style.background === "var(--panel-2)") d.style.background = ""; });
+    jr.appendChild(d);
+  });
+
+  /* cadena de control de acceso */
+  var chain = document.getElementById("ac-chain");
+  var acSt = document.getElementById("ac-status");
+  var niveles = [
+    "1 · ¿token válido?              → 401 si no",
+    "2 · ¿tiene el rol seller?       → 403 si no",
+    "3 · ¿el cuerpo es válido?       → 400 si no",
+    "4 · ¿la publicación es TUYA?    → 403 si no"
+  ];
+
+  function pintar(hasta, msg, color) {
+    chain.innerHTML = "";
+    niveles.forEach(function (n, i) {
+      var d = document.createElement("div");
+      var estado;
+      if (i < hasta) estado = ["var(--good-soft)", "var(--free)", 1];
+      else if (i === hasta) estado = ["var(--bad-soft)", "var(--busy)", 1];
+      else estado = ["var(--panel-2)", "var(--line)", 0.4];
+      d.style.cssText = "font-family:var(--mono);font-size:0.76rem;padding:0.45rem 0.7rem;border-radius:3px;background:" +
+        estado[0] + ";border-left:3px solid " + estado[1] + ";opacity:" + estado[2];
+      d.textContent = n + (i === hasta ? "   ← rechazada aquí" : (i < hasta ? "   ✓" : ""));
+      chain.appendChild(d);
+    });
+    acSt.textContent = msg;
+    acSt.style.color = color;
+  }
+
+  document.getElementById("ac-anon").addEventListener("click", function () {
+    pintar(0, "401. Ni siquiera se valida el cuerpo: hacerlo sería regalar el mapa de la API a un anónimo.", "var(--busy)");
+  });
+  document.getElementById("ac-buyer").addEventListener("click", function () {
+    pintar(1, "403. Autenticado correctamente, pero un comprador no publica.", "var(--busy)");
+  });
+  document.getElementById("ac-rival").addEventListener("click", function () {
+    pintar(3, "403 — y ESTE es el nivel que ninguna anotación cubre. Mismo token, mismo rol, mismo endpoint: lo único que cambia es de quién es el recurso.", "var(--busy)");
+  });
+  document.getElementById("ac-owner").addEventListener("click", function () {
+    chain.innerHTML = "";
+    niveles.forEach(function (n) {
+      var d = document.createElement("div");
+      d.style.cssText = "font-family:var(--mono);font-size:0.76rem;padding:0.45rem 0.7rem;border-radius:3px;background:var(--good-soft);border-left:3px solid var(--free)";
+      d.textContent = n + "   ✓";
+      chain.appendChild(d);
+    });
+    acSt.textContent = "200. Los cuatro niveles pasados.";
+    acSt.style.color = "var(--free)";
+  });
+  pintar(0, "POST /listings/{id}/archive · elige quién llama.", "");
+})();
+</script>
+</body>
+</html>

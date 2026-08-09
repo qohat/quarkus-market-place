@@ -60,3 +60,13 @@ If you want to learn more about building native executables, please consult <htt
 Easily start your REST Web Services
 
 [Related guide section...](https://quarkus.io/guides/getting-started-reactive#reactive-jax-rs-resources)
+
+## Documentación interactiva
+
+El recorrido completo, con simulaciones que se pueden reproducir en el navegador:
+
+**[docs/html/index.html](docs/html/index.html)**
+
+Diez módulos —de los fundamentos de Quarkus a la compilación nativa— más un
+[catálogo de los 32 fallos](docs/html/bugs.html) que aparecieron por el camino, con su síntoma
+exacto y su arreglo. No necesita servidor: se abre con doble clic.

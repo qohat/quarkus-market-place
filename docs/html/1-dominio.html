@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Dominio con Java moderno — sealed, records y ADTs</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="wrap">
+
+<nav class="topnav">
+  <div class="crumbs"><a href="index.html">Quarkus a alta escala</a> <span>/</span> <span>Módulo 1</span></div>
+  <a href="bugs.html">Catálogo de fallos →</a>
+</nav>
+
+<header>
+  <p class="eyebrow">Módulo 1 · el dominio</p>
+  <h1>Que el compilador haga el trabajo</h1>
+  <p class="lede">
+    Un dominio sin una sola anotación de framework, donde añadir un caso nuevo rompe el build
+    exactamente en los sitios que hay que tocar.
+  </p>
+</header>
+
+<section>
+  <div class="prose stack">
+    <h2>El marketplace es híbrido, y eso decide todo</h2>
+    <p>
+      Vende <strong>productos físicos</strong>, cuyo recurso escaso es un contador de unidades, y
+      <strong>servicios reservables</strong>, cuyo recurso escaso es el tiempo de un calendario.
+    </p>
+    <p class="thesis">
+      Son dos problemas de concurrencia distintos que exigen dos respuestas distintas. Por eso el
+      dominio se eligió así: para que los módulos 6 y 7 tuvieran algo de verdad que resolver.
+    </p>
+  </div>
+
+<pre><span class="kw">public sealed interface</span> Listing
+        <mark><span class="kw">permits</span> ProductListing, ServiceListing</mark> {
+
+    ListingId id();
+    SellerId sellerId();
+    Money price();
+    ListingStatus status();
+    Listing withStatus(ListingStatus nuevo);
+
+    <span class="cm">// unidades o plazas disponibles, según el tipo</span>
+    <span class="kw">int</span> availableUnits();
+
+    <span class="kw">default boolean</span> acceptsOrders() {
+        <span class="kw">return</span> status() == PUBLISHED &amp;&amp; availableUnits() &gt; 0;
+    }
+}</pre>
+
+  <p class="note">
+    <code>sealed</code> declara: <strong>estos son todos los casos que existen</strong>. No es
+    documentación — es una promesa que el compilador verifica y usa.
+  </p>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>Qué compra esa promesa</h2>
+    <p>
+      Un <code>switch</code> sobre un tipo sellado <strong>no necesita <code>default</code></strong>,
+      y ahí está la ganancia. Prueba a añadir un tipo nuevo:
+    </p>
+  </div>
+
+  <div class="sim">
+    <div class="sim-head">
+      <div class="ctl">
+        <button id="seal-add">Añadir DigitalListing al sealed</button>
+        <button class="alt" id="seal-reset">Reiniciar</button>
+      </div>
+    </div>
+<pre id="seal-code"><span class="kw">public static</span> FulfillmentCheck check(Listing listing, <span class="kw">int</span> cantidad) {
+    <span class="kw">return switch</span> (listing) {
+        <span class="kw">case</span> ProductListing p -&gt; comprobarStock(p, cantidad);
+        <span class="kw">case</span> ServiceListing s -&gt; comprobarPlazas(s, cantidad);
+    };  <span class="cm">// sin default: el compilador sabe que no faltan casos</span>
+}</pre>
+    <div id="seal-errors" style="display:flex;flex-direction:column;gap:0.4rem"></div>
+    <div id="seal-status" class="status">Dos casos, dos ramas. El switch es exhaustivo.</div>
+  </div>
+
+  <p class="win">
+    Con <code>default</code> —o con una jerarquía abierta— el código habría compilado y el caso
+    nuevo habría caído silenciosamente en la rama por defecto. <strong>El bug se descubre en
+    producción en vez de en el build.</strong>
+  </p>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>ADT: el resultado lleva su motivo</h2>
+    <p>
+      Una comprobación de disponibilidad puede fallar por dos razones distintas, y el que llama
+      necesita saber cuál. Un <code>boolean</code> pierde esa información; un
+      <strong>tipo algebraico</strong> la conserva.
+    </p>
+  </div>
+
+  <div class="cards">
+    <div class="card bad">
+      <h3>Con booleano</h3>
+      <p><code>boolean puedeAtender(...)</code></p>
+      <p>¿No hay stock? ¿Está pausada? ¿Cuántas quedan? Hace falta otra llamada para saberlo.</p>
+    </div>
+    <div class="card good">
+      <h3>Con ADT</h3>
+      <p><code>sealed interface FulfillmentCheck</code></p>
+      <p>Cada resultado trae <strong>sus propios datos</strong>, y el compilador obliga a tratarlos todos.</p>
+    </div>
+  </div>
+
+<pre class="good"><span class="kw">public sealed interface</span> FulfillmentCheck {
+    <span class="kw">record</span> Fulfillable(Money total) <span class="kw">implements</span> FulfillmentCheck {}
+    <span class="kw">record</span> NotAcceptingOrders(ListingStatus estado) <span class="kw">implements</span> FulfillmentCheck {}
+    <span class="kw">record</span> InsufficientAvailability(<span class="kw">int</span> pedidas, <span class="kw">int</span> disponibles) <span class="kw">implements</span> FulfillmentCheck {}
+}
+
+<span class="cm">// y en el borde REST, con record patterns:</span>
+<span class="kw">return switch</span> (check) {
+    <span class="kw">case</span> <mark>Fulfillable(var total)</mark> -&gt; ok(total);
+    <span class="kw">case</span> <mark>NotAcceptingOrders(var estado)</mark> -&gt; conflicto(estado);
+    <span class="kw">case</span> <mark>InsufficientAvailability(var p, var d)</mark> -&gt; faltanUnidades(p, d);
+};</pre>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>El bug de <code>BigDecimal</code> que casi nadie ve venir</h2>
+  </div>
+
+  <div class="sim">
+    <div class="sim-head"><button class="play" id="bd-play">Comparar 34.5 con 34.50</button></div>
+    <div id="bd-out" style="font-family:var(--mono);font-size:0.9rem;display:flex;flex-direction:column;gap:0.5rem"></div>
+  </div>
+
+  <div class="prose stack">
+    <p>
+      <code>BigDecimal.equals</code> compara <strong>también la escala</strong>. Dos importes
+      idénticos con distinto número de decimales no son iguales, y eso rompe
+      <code>equals</code>, <code>hashCode</code>, mapas, conjuntos y tests, de forma intermitente.
+    </p>
+  </div>
+
+<pre class="good"><span class="kw">public record</span> Money(BigDecimal amount, Currency currency) {
+
+    <span class="kw">public</span> Money {   <span class="cm">// constructor compacto: TODAS las construcciones pasan por aquí</span>
+        Objects.requireNonNull(amount);
+        Objects.requireNonNull(currency);
+        <mark>amount = amount.setScale(currency.getDefaultFractionDigits(),
+                                 RoundingMode.UNNECESSARY);</mark>
+    }
+}</pre>
+
+  <div class="cards">
+    <div class="card">
+      <h3>Normalizar la escala</h3>
+      <p>Todos los importes en euros tienen dos decimales. Siempre. Y así <code>equals</code> vuelve a significar lo que uno espera.</p>
+    </div>
+    <div class="card">
+      <h3><code>RoundingMode.UNNECESSARY</code></h3>
+      <p>Lanza si haría falta redondear. <strong>Fallar antes que redondear dinero en silencio.</strong></p>
+    </div>
+    <div class="card">
+      <h3>Y el constructor compacto</h3>
+      <p>Es el único punto por el que pasa toda construcción, incluida la que haga un adaptador al leer de la base de datos.</p>
+    </div>
+  </div>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>Cero framework, tests en milisegundos</h2>
+    <p>
+      En todo el paquete <code>domain</code> no hay una anotación de Hibernate, ni de Jackson, ni de
+      JAX-RS. La consecuencia práctica es que sus tests se ejecutan con <code>new</code> y
+      <em>assertions</em>, sin levantar nada.
+    </p>
+  </div>
+
+  <div class="metrics">
+    <div class="metric"><span class="n">3 s</span><span class="l">los 9 tests de StockItem</span></div>
+    <div class="metric"><span class="n">0</span><span class="l">contenedores necesarios</span></div>
+    <div class="metric hl"><span class="n">1×</span><span class="l">sitio donde vive cada regla</span></div>
+  </div>
+
+  <p class="note">
+    Esa separación se cobra en el módulo 6: las reglas de propiedad de un recurso —el fallo BOLA—
+    se prueban <strong>sin Quarkus</strong>, porque viven en el dominio y no en la capa HTTP.
+  </p>
+</section>
+
+<div class="pager">
+  <a href="0-fundamentos.html"><small>Anterior</small> ← Módulo 0 · Fundamentos</a>
+  <a href="2-rest.html"><small>Siguiente</small> Módulo 2 · REST y CDI →</a>
+</div>
+
+</div>
+
+<script>
+(function () {
+  var reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /* sealed */
+  var code = document.getElementById("seal-code");
+  var errs = document.getElementById("seal-errors");
+  var st = document.getElementById("seal-status");
+  var original = code.innerHTML;
+
+  var rotos = [
+    "Listings.java:24 — the switch expression does not cover all possible input values",
+    "ListingResponse.java:41 — the switch expression does not cover all possible input values",
+    "ListingEntity.java:88 — the switch expression does not cover all possible input values"
+  ];
+
+  document.getElementById("seal-add").addEventListener("click", function () {
+    code.innerHTML = original.replace(
+      '<span class="cm">// sin default: el compilador sabe que no faltan casos</span>',
+      '<span class="cm">// ← falta el caso DigitalListing</span>'
+    ).replace("};", '};  <span class="cm">// ✗ ERROR DE COMPILACIÓN</span>');
+    code.className = "bad";
+    errs.innerHTML = "";
+    rotos.forEach(function (r, i) {
+      setTimeout(function () {
+        var d = document.createElement("div");
+        d.style.cssText = "font-family:var(--mono);font-size:0.75rem;color:var(--busy);background:var(--bad-soft);padding:0.4rem 0.7rem;border-radius:3px";
+        d.textContent = r;
+        errs.appendChild(d);
+      }, reduced ? 0 : i * 350);
+    });
+    st.textContent = "El build se rompe en los TRES sitios que hay que tocar. Ni uno más, ni uno menos.";
+    st.style.color = "var(--busy)";
+  });
+
+  document.getElementById("seal-reset").addEventListener("click", function () {
+    code.innerHTML = original;
+    code.className = "";
+    errs.innerHTML = "";
+    st.textContent = "Dos casos, dos ramas. El switch es exhaustivo.";
+    st.style.color = "";
+  });
+
+  /* BigDecimal */
+  var out = document.getElementById("bd-out");
+  document.getElementById("bd-play").addEventListener("click", function () {
+    out.innerHTML = "";
+    var lineas = [
+      ["new BigDecimal(\"34.5\").equals(new BigDecimal(\"34.50\"))", "false", "var(--busy)"],
+      ["→ mismo importe, distinta escala: NO son iguales", "", "var(--ink-soft)"],
+      ["", "", ""],
+      ["Money.of(\"34.5\",\"EUR\").equals(Money.of(\"34.50\",\"EUR\"))", "true", "var(--free)"],
+      ["→ el constructor compacto normalizó ambas a 34.50", "", "var(--ink-soft)"]
+    ];
+    lineas.forEach(function (l, i) {
+      setTimeout(function () {
+        var d = document.createElement("div");
+        d.style.color = l[2] || "";
+        d.innerHTML = l[0] ? l[0] + (l[1] ? "  <strong>" + l[1] + "</strong>" : "") : "&nbsp;";
+        out.appendChild(d);
+      }, reduced ? 0 : i * 300);
+    });
+  });
+})();
+</script>
+</body>
+</html>

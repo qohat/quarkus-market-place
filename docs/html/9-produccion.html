@@ -1,0 +1,484 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Nativo y producción — 21× al arrancar, 11× menos memoria</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="wrap">
+
+<nav class="topnav">
+  <div class="crumbs"><a href="index.html">Quarkus a alta escala</a> <span>/</span> <span>Módulo 9</span></div>
+  <a href="bugs.html">Catálogo de fallos →</a>
+</nav>
+
+<header>
+  <p class="eyebrow">Módulo 9 · escala y producción</p>
+  <h1>Nativo no es «más rápido»</h1>
+  <p class="lede">
+    Arranca 21 veces antes y ocupa 11 veces menos memoria. El throughput es idéntico — y ese empate
+    es el dato interesante.
+  </p>
+</header>
+
+<section>
+  <div class="prose stack">
+    <h2>Qué hace realmente el compilador nativo</h2>
+    <p>Lo que <strong>no</strong> es: no es «traducir Java a C».</p>
+    <p>
+      <code>native-image</code> hace <strong>análisis estático de accesibilidad</strong>: parte de tu
+      <code>main()</code>, sigue cada llamada y cada campo, construye el grafo de todo lo alcanzable
+      y <strong>tira el resto</strong> — de tu código, de las dependencias y del JDK.
+    </p>
+  </div>
+
+<pre>JAR + dependencias + JDK entero
+        ↓  análisis de accesibilidad
+solo lo que tu programa puede llegar a ejecutar
+        ↓  compilación AOT a código máquina
+<mark>un ejecutable con SU PROPIA máquina virtual dentro</mark></pre>
+
+  <p class="note">
+    Ese último punto sorprende: el binario lleva <strong>SubstrateVM</strong>, una JVM reducida con
+    recolector de basura y gestión de hilos, pero <strong>sin cargador de clases, sin intérprete y
+    sin JIT</strong>. No los necesita, porque ya no hay bytecode que cargar.
+  </p>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>La pieza que explica los 92 milisegundos</h2>
+    <p>Compara lo que hace cada uno al arrancar:</p>
+  </div>
+
+  <div class="sim">
+    <div class="sim-head"><button class="play" id="ih-play">Comparar arranques</button></div>
+    <div id="ih-view" style="display:flex;flex-direction:column;gap:1.2rem"></div>
+    <div id="ih-status" class="status">Las mismas tareas… o ninguna.</div>
+  </div>
+
+  <p class="thesis">
+    Durante la compilación, GraalVM <strong>ejecuta los inicializadores estáticos y guarda el estado
+    de memoria resultante dentro del ejecutable</strong>. Se llama <em>image heap</em>, y al arrancar
+    simplemente se mapea en memoria.
+  </p>
+
+  <p>
+    Tus objetos de configuración y las estructuras internas del framework <strong>ya existen</strong>
+    cuando el proceso arranca. No se construyen: se leen del fichero, como quien restaura una foto.
+    Es exactamente la idea de la <em>augmentation</em> del módulo 0, llevada un paso más allá.
+  </p>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>El mundo cerrado, y qué rompe</h2>
+    <p>El precio es que <strong>todo debe ser predecible al compilar</strong>.</p>
+  </div>
+
+<pre class="bad">Class.forName(<span class="str">"com.marketplace."</span> + nombreQueVieneDeUnFichero)</pre>
+
+  <p class="warn">
+    Esa clase no aparece en el grafo, así que se elimina. Y el fallo <strong>no aparece al
+    compilar</strong>: el binario se genera tan feliz y revienta en runtime, solo en la rama que usa
+    esa clase.
+  </p>
+
+  <div class="tablewrap">
+    <table>
+      <tr><th>Qué se rompe</th><th>Por qué</th></tr>
+      <tr><td>Reflection</td><td><code>getMethod("nombre")</code> no es rastreable</td></tr>
+      <tr><td>Proxies dinámicos</td><td>Se generan en runtime; ya no hay generador</td></tr>
+      <tr><td>Serialización</td><td>Suele ir por reflection</td></tr>
+      <tr><td>Recursos</td><td>No hay classpath del que leerlos</td></tr>
+      <tr><td>JNI</td><td>Código nativo que llama a Java por nombre</td></tr>
+    </table>
+  </div>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>Y aquí es donde encaja Quarkus</h2>
+    <p>
+      <strong>Casi no usa nada de eso en runtime</strong>, y no por contenerse: ya lo había resuelto
+      para arrancar rápido en JVM. Lo tienes comprobado desde el módulo 0, en tu propio artefacto:
+    </p>
+  </div>
+
+<pre class="good">ListingCatalog_Bean.class          <span class="cm">← ARC resolvió la inyección al compilar</span>
+ListingCatalog_ClientProxy.class   <span class="cm">← el proxy es una clase REAL, no dinámica</span>
+ListingResource$quarkusrestinvoker$publish_a7f3....class
+MoneyView$quarkusjacksonserializer.class</pre>
+
+  <p class="thesis">
+    Cada una existe <strong>como fichero</strong>. El análisis las encuentra sin esfuerzo porque
+    alguien las llama explícitamente. <strong>Nativo no es una funcionalidad añadida de Quarkus: es
+    la consecuencia de su diseño.</strong>
+  </p>
+
+  <p class="win">
+    Esta aplicación —Hibernate, Kafka, OIDC, OpenTelemetry, Jackson— compiló nativa
+    <strong>sin una sola línea de configuración de GraalVM</strong>. Cuando una extensión necesita
+    reflection, registra ella misma los metadatos durante la augmentation.
+  </p>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>La medición</h2>
+    <p>Mismo código, ambos en contenedor, contra el mismo PostgreSQL y el mismo Kafka.</p>
+  </div>
+
+  <div class="tablewrap">
+    <table>
+      <tr><th></th><th class="num">JVM</th><th class="num">Nativo</th><th></th></tr>
+      <tr><td>Arranque</td><td class="num">1,933 s</td><td class="num"><strong>0,092 s</strong></td><td><strong>21×</strong></td></tr>
+      <tr><td>Memoria residente</td><td class="num">406 MiB</td><td class="num"><strong>36 MiB</strong></td><td><strong>11×</strong></td></tr>
+      <tr><td>Throughput (c=200)</td><td class="num">1 864 req/s</td><td class="num">1 844 req/s</td><td><strong>empate</strong></td></tr>
+      <tr><td>p99</td><td class="num">119 ms</td><td class="num">132 ms</td><td>JVM algo mejor</td></tr>
+      <tr><td>Compilación</td><td class="num">segundos</td><td class="num">1m 23s</td><td></td></tr>
+      <tr><td>Imagen</td><td class="num">803 MB</td><td class="num">364 MB</td><td></td></tr>
+    </table>
+  </div>
+
+  <div class="prose stack">
+    <h3>El empate es el resultado interesante</h3>
+    <p>
+      La teoría dice que el nativo rinde peor en régimen permanente: el JIT optimiza con el perfil
+      real de ejecución y puede recompilar; un binario nativo se optimizó una vez y a ciegas.
+    </p>
+  </div>
+
+  <pre>200 workers ÷ 0,1 s = 2 000 req/s de techo
+medido: 1 844 (nativo) y 1 864 (JVM)</pre>
+
+  <p class="thesis">
+    La desventaja del nativo es real, pero <strong>solo se manifiesta cuando el cuello de botella es
+    la CPU</strong>. En un servicio que se pasa la vida esperando a la base de datos, no aparece. Es
+    la lección del módulo 4 con otro disfraz.
+  </p>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>Cuándo cada uno</h2>
+  </div>
+  <div class="cards">
+    <div class="card good">
+      <h3>Nativo</h3>
+      <p>Serverless, escalado a cero, cientos de réplicas pequeñas, CLIs. Cuando el arranque o la memoria son el problema.</p>
+    </div>
+    <div class="card">
+      <h3>JVM</h3>
+      <p>Un servicio que arranca una vez y sirve tráfico durante semanas, con la CPU saturada.</p>
+    </div>
+  </div>
+
+  <p class="win">
+    Y un argumento económico que se olvida: <strong>11× menos memoria son 11× más réplicas por el
+    mismo dinero</strong>. En Kubernetes eso puede pesar más que cualquier diferencia de throughput.
+  </p>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>Caché con invalidación dirigida</h2>
+    <p>
+      Lo habitual es poner un tiempo de expiración y servir datos viejos hasta que venza. Aquí no
+      hace falta: <strong>el módulo 7 dejó un evento que dice exactamente cuándo cambió el
+      stock</strong>.
+    </p>
+  </div>
+
+  <div class="cards">
+    <div class="card good">
+      <h3>Se cachea <code>browse()</code></h3>
+      <p>Mucha lectura, poca escritura y <strong>resultado compartido</strong>: todo el mundo ve lo mismo.</p>
+    </div>
+    <div class="card bad">
+      <h3>NO se cachea <code>ownedBy()</code></h3>
+      <p>Depende del usuario: una entrada por persona, tasa de acierto pésima. <strong>Cachear lo que no se comparte es pagar memoria por nada.</strong></p>
+    </div>
+  </div>
+
+  <div class="bug">
+    <h3>Y la caché introdujo un bug que un test cazó</h3>
+    <p class="sym">Expected: a collection with size &lt;0&gt; · Actual: [{availableUnits=10, …}]</p>
+    <p>
+      Un test archivaba una publicación y esperaba que desapareciera del escaparate. Seguía ahí: la
+      invalidación por evento cubría el <em>stock</em>, pero <strong>archivar cambia la
+      visibilidad</strong> y no genera ningún evento de inventario.
+    </p>
+    <p class="fix">
+      Invalidar también en las transiciones de estado. Y la lección: <strong>hay que enumerar todas
+      las vías que pueden cambiar el resultado</strong>, y basta olvidar una para servir datos viejos
+      indefinidamente. La caché no introdujo un fallo evidente: introdujo uno que solo aparece si
+      alguien mira.
+    </p>
+  </div>
+
+  <p class="note">
+    Y por <strong>tercera vez</strong> en el curso: <code>@CacheInvalidateAll</code> va en los
+    métodos públicos, no en el privado por el que pasan todos, porque
+    <strong>los interceptores de CDI solo actúan en llamadas que entran desde fuera del bean</strong>.
+    Igual que <code>@Transactional</code> en el módulo 6 y la saga en el 7.
+  </p>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>Control de admisión: rechazar pronto</h2>
+    <p>
+      Cierra el círculo del módulo 4, donde medimos que un servicio saturado
+      <strong>no daba ni un error</strong>.
+    </p>
+  </div>
+
+  <div class="sim">
+    <div class="sim-head">
+      <div class="ctl">
+        <button id="tb-req">Petición</button>
+        <button id="tb-burst">Ráfaga de 5</button>
+        <button class="alt" id="tb-wait">Esperar 2 s</button>
+      </div>
+    </div>
+    <div id="tb-view" style="display:flex;gap:0.25rem;flex-wrap:wrap;min-height:1.6rem"></div>
+    <div id="tb-status" class="status">Cubo lleno: 5 fichas. Cada petición gasta una; se repone 1 por segundo.</div>
+  </div>
+
+  <div class="cards">
+    <div class="card">
+      <h3>Tolera ráfagas</h3>
+      <p>
+        Un cliente que estuvo callado acumula fichas y las gasta de golpe: es lo que hace una
+        pantalla al abrirse. Un contador por ventana fija la rechazaría.
+      </p>
+    </div>
+    <div class="card">
+      <h3>Por cliente, no global</h3>
+      <p>
+        Y por usuario antes que por IP: detrás de una IP puede haber una empresa entera saliendo
+        por el mismo NAT.
+      </p>
+    </div>
+    <div class="card">
+      <h3>Health checks exentos</h3>
+      <p>
+        Si Kubernetes recibe 429 al sondear un servicio saturado, lo saca del balanceador y con
+        liveness lo reinicia: habrías convertido una sobrecarga en una caída.
+      </p>
+    </div>
+  </div>
+
+  <p class="warn">
+    Sus dos límites, dichos claramente: <strong>es por instancia</strong> —con tres réplicas el
+    límite real es el triple— y <strong>el mapa de clientes crece sin caducidad</strong>. Por eso en
+    la práctica esto vive en el balanceador o la pasarela de API.
+  </p>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>El fallo del que menos orgulloso estoy</h2>
+  </div>
+
+  <div class="bug">
+    <h3>53 220 req/s en JVM contra 1 861 en nativo</h3>
+    <p class="sym">Sobre un endpoint que duerme 100 ms — aritméticamente imposible</p>
+    <p>
+      Dos cosas iban mal. Los «responses» eran <strong>192 000 códigos 429</strong> del rate limiter.
+      Y sobre todo: <strong>el binario nativo se había compilado antes de escribir ese rate
+      limiter</strong>. No se estaba comparando el mismo código.
+    </p>
+    <p class="fix">
+      Es exactamente el error documentado en el módulo 4 —cambiar dos variables y atribuir la
+      diferencia a la que uno tenía en mente— <strong>repetido a pesar de tenerlo escrito</strong>.
+    </p>
+  </div>
+
+  <p class="thesis">
+    Lo que lo cazó no fue la experiencia: fue que el número no cuadraba con la ley de Little.
+    <strong>Un número que no puedes explicar con la aritmética que ya conoces es un número
+    equivocado.</strong>
+  </p>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>Lo que se rompe al salir de tu máquina</h2>
+    <p>Todos, fallos reales de este módulo:</p>
+  </div>
+
+  <div class="buglist">
+    <div class="bug">
+      <h3>El binario es de un SO y una arquitectura</h3>
+      <p class="sym">exec format error</p>
+      <p>Compilado en un contenedor Linux, no se ejecuta en macOS. <strong>No hay «compila una vez, ejecuta donde sea».</strong></p>
+    </div>
+    <div class="bug">
+      <h3>La versión de Java, por tercera vez</h3>
+      <p class="sym">UnsupportedClassVersionError: class file version 69.0 … up to 65.0</p>
+      <p>El daemon de Gradle (módulo 4), el toolchain, y ahora la imagen base del contenedor. <strong>«Uso Java 25» es una propiedad de cada proceso que toca tu bytecode, no del proyecto.</strong></p>
+    </div>
+    <div class="bug">
+      <h3>El perfil de build queda grabado en el artefacto</h3>
+      <p class="sym">Las variables de entorno no sobrescribían la configuración</p>
+      <p>Y sus propiedades <code>%bench.</code> ganan. Las de sistema (<code>-D</code>) sí mandan.</p>
+    </div>
+    <div class="bug">
+      <h3>Build time no es runtime</h3>
+      <p class="sym">UnsatisfiedResolutionException para JsonWebToken</p>
+      <p><code>quarkus.oidc.enabled</code> es de build: apagarla elimina beans y rompe la inyección <em>al compilar</em>. La de runtime es <code>tenant-enabled</code>.</p>
+    </div>
+  </div>
+
+  <p class="note">
+    El patrón común: <strong>casi nada de esto falla en tu máquina</strong>, porque allí Dev Services
+    te lo cablea todo y el perfil por defecto es el que esperabas.
+  </p>
+</section>
+
+<div class="pager">
+  <a href="8-resiliencia.html"><small>Anterior</small> ← Módulo 8 · Resiliencia</a>
+  <a href="bugs.html"><small>Siguiente</small> Catálogo de fallos →</a>
+</div>
+
+</div>
+
+<script>
+(function () {
+  var reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /* image heap */
+  var pasos = [
+    "arrancar la JVM",
+    "leer miles de .class del disco",
+    "verificar el bytecode",
+    "ejecutar inicializadores estáticos",
+    "interpretar mientras el JIT observa"
+  ];
+  var view = document.getElementById("ih-view"), st = document.getElementById("ih-status");
+  function carril(titulo, nativo) {
+    var w = document.createElement("div");
+    w.style.cssText = "display:flex;flex-direction:column;gap:0.35rem";
+    var h = document.createElement("div");
+    h.style.cssText = "font-family:var(--sans);font-size:0.85rem;font-weight:650;display:flex;justify-content:space-between";
+    h.innerHTML = "<span>" + titulo + "</span><span class='lane-total' id='ih-" + (nativo ? "n" : "j") + "'>—</span>";
+    w.appendChild(h);
+    var barras = [];
+    pasos.forEach(function (p) {
+      var row = document.createElement("div");
+      row.style.cssText = "display:flex;align-items:center;gap:0.7rem";
+      var lb = document.createElement("span");
+      lb.style.cssText = "font-family:var(--mono);font-size:0.68rem;color:var(--ink-soft);width:13rem;flex:none;text-align:right";
+      lb.textContent = p;
+      var tr = document.createElement("div");
+      tr.style.cssText = "position:relative;height:0.85rem;flex:1;background:var(--panel-2);border-radius:2px;overflow:hidden";
+      var f = document.createElement("i");
+      f.style.cssText = "display:block;height:100%;width:0%;background:" + (nativo ? "var(--accent)" : "var(--busy)");
+      tr.appendChild(f);
+      row.appendChild(lb); row.appendChild(tr);
+      w.appendChild(row);
+      barras.push(f);
+    });
+    view.appendChild(w);
+    return barras;
+  }
+  var jvm = carril("JVM — 1 933 ms", false);
+  var nat = carril("Nativo — el image heap ya lo trae hecho", true);
+
+  async function correr() {
+    jvm.concat(nat).forEach(function (f) { f.style.width = "0%"; });
+    if (reduced) {
+      jvm.forEach(function (f) { f.style.width = "100%"; });
+      document.getElementById("ih-j").textContent = "1 933 ms";
+      document.getElementById("ih-n").textContent = "92 ms";
+      return;
+    }
+    st.textContent = "La JVM hace las cinco tareas, cada vez que el proceso arranca…";
+    for (var i = 0; i < jvm.length; i++) {
+      jvm[i].style.transition = "width .38s linear";
+      jvm[i].style.width = "100%";
+      await new Promise(function (r) { setTimeout(r, 390); });
+    }
+    document.getElementById("ih-j").textContent = "1 933 ms";
+    await new Promise(function (r) { setTimeout(r, 500); });
+    st.textContent = "Y el nativo…";
+    nat.forEach(function (f) {
+      f.style.transition = "width .2s";
+      f.style.width = "100%";
+      f.style.opacity = "0.35";
+    });
+    document.getElementById("ih-n").textContent = "92 ms";
+    await new Promise(function (r) { setTimeout(r, 400); });
+    st.textContent = "…no las hace. Los objetos ya estaban construidos DENTRO del ejecutable: arrancar es mapearlos en memoria.";
+    st.style.color = "var(--accent)";
+  }
+  document.getElementById("ih-play").addEventListener("click", correr);
+  if (!reduced) setTimeout(correr, 500); else correr();
+
+  /* token bucket */
+  var CAP = 5, fichas = CAP;
+  var tbView = document.getElementById("tb-view"), tbSt = document.getElementById("tb-status");
+  function pintarTb() {
+    tbView.innerHTML = "";
+    for (var i = 0; i < CAP; i++) {
+      var s = document.createElement("span");
+      s.style.cssText = "width:2.2rem;height:1.4rem;border-radius:3px;background:" +
+        (i < fichas ? "var(--free)" : "var(--panel-2)") + ";transition:background .2s";
+      tbView.appendChild(s);
+    }
+  }
+  function pedir() {
+    if (fichas > 0) {
+      fichas--;
+      tbSt.textContent = "200 OK · quedan " + fichas + " fichas.";
+      tbSt.style.color = "";
+    } else {
+      tbSt.textContent = "429 Too Many Requests + Retry-After: 1 · rechazada al instante, sin consumir recursos del servidor.";
+      tbSt.style.color = "var(--busy)";
+    }
+    pintarTb();
+  }
+  document.getElementById("tb-req").addEventListener("click", pedir);
+  document.getElementById("tb-burst").addEventListener("click", function () {
+    var antes = fichas;
+    for (var i = 0; i < 5; i++) if (fichas > 0) fichas--;
+    pintarTb();
+    tbSt.textContent = antes >= 5
+      ? "Ráfaga de 5 aceptada entera. Es lo que hace una pantalla al abrirse, y un contador por ventana fija la rechazaría."
+      : "Parte de la ráfaga rechazada: solo había " + antes + " fichas.";
+    tbSt.style.color = antes >= 5 ? "var(--free)" : "var(--busy)";
+  });
+  document.getElementById("tb-wait").addEventListener("click", function () {
+    fichas = Math.min(CAP, fichas + 2);
+    pintarTb();
+    tbSt.textContent = "Repuestas 2 fichas. El cliente no queda castigado, solo frenado.";
+    tbSt.style.color = "";
+  });
+  pintarTb();
+})();
+</script>
+</body>
+</html>

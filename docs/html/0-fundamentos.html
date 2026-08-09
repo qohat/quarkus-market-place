@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Cómo funciona Quarkus — build time contra runtime</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="wrap">
+
+<nav class="topnav">
+  <div class="crumbs"><a href="index.html">Quarkus a alta escala</a> <span>/</span> <span>Módulo 0</span></div>
+  <a href="bugs.html">Catálogo de fallos →</a>
+</nav>
+
+<header>
+  <p class="eyebrow">Módulo 0 · el modelo mental</p>
+  <h1>Todo el trabajo, antes de arrancar</h1>
+  <p class="lede">
+    Una sola decisión de diseño explica el arranque de 92 ms, la compilación nativa y por qué
+    <code>getBean()</code> no existe. Merece la pena entenderla bien.
+  </p>
+</header>
+
+<section>
+  <div class="prose stack">
+    <h2>Qué hace un framework tradicional al arrancar</h2>
+    <p>
+      Escanear el classpath buscando anotaciones, construir el grafo de inyección, generar proxies
+      dinámicos, leer configuración, preparar el ORM. Todo eso, <strong>cada vez que el proceso
+      arranca</strong>, en cada instancia y en cada despliegue.
+    </p>
+    <p class="thesis">
+      Quarkus hace ese trabajo <strong>una vez, al compilar</strong>, y guarda el resultado como
+      bytecode. La fase se llama <em>augmentation</em>.
+    </p>
+  </div>
+
+  <div class="sim">
+    <div class="sim-head">
+      <button class="play" id="boot-play">Comparar arranques</button>
+      <div class="legend">
+        <span class="key"><span class="swatch" style="background:var(--busy)"></span> trabajo al arrancar</span>
+        <span class="key"><span class="swatch" style="background:var(--accent)"></span> hecho al compilar</span>
+      </div>
+    </div>
+    <div id="boot" style="display:flex;flex-direction:column;gap:1.2rem"></div>
+    <div id="boot-status" class="status">Las mismas tareas. Lo que cambia es cuándo se hacen.</div>
+  </div>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>ARC: inyección resuelta al compilar</h2>
+    <p>
+      ARC es la implementación de CDI de Quarkus. La diferencia con un contenedor clásico es que
+      <strong>el grafo de inyección se resuelve y se cierra en build time</strong>: no hay un mapa
+      vivo al que preguntarle cosas en runtime.
+    </p>
+  </div>
+
+  <div class="cards">
+    <div class="card bad">
+      <h3>Lo que deja de ser posible</h3>
+      <p>
+        <code>applicationContext.getBean(X.class)</code>. Pedirle beans al contenedor por tipo o por
+        nombre en runtime. El contenedor ya no es consultable.
+      </p>
+    </div>
+    <div class="card good">
+      <h3>Lo que se gana</h3>
+      <p>
+        Arranque instantáneo, cero reflection, y —el efecto colateral que importa— la aplicación
+        <strong>se puede compilar a un binario nativo</strong>.
+      </p>
+    </div>
+  </div>
+
+  <div class="prose stack">
+    <h3>Y ARC borra lo que nadie usa</h3>
+    <p>
+      Si ningún sitio inyecta un bean, ARC concluye que es código muerto y <strong>lo elimina del
+      artefacto</strong>. Comprobado en este proyecto: antes de que nadie inyectara
+      <code>ListingCatalog</code>, no aparecía ni una clase de <code>com/marketplace</code> en el
+      bytecode generado.
+    </p>
+  </div>
+
+  <pre><span class="cm"># Con ListingResource ya inyectando el caso de uso:</span>
+$ unzip -l build/quarkus-app/quarkus/generated-bytecode.jar | grep marketplace
+
+<mark>ListingCatalog_Bean.class</mark>                <span class="cm">← la fábrica del bean, generada</span>
+<mark>ListingCatalog_ClientProxy.class</mark>         <span class="cm">← el proxy es una CLASE REAL</span>
+ListingResource_Bean.class                <span class="cm">← sin proxy: los recursos REST son singleton</span>
+ListingResource$quarkusrestinvoker$publish_a7f3...class
+MoneyView$quarkusjacksonserializer.class  <span class="cm">← hasta el serializador JSON</span></pre>
+
+  <p class="note">
+    Ese <em>invoker</em> es la pieza clave: contiene una llamada <code>invokevirtual</code> directa
+    al método del recurso. <strong>Cero reflection por petición.</strong> Y es también la razón de
+    que la compilación nativa del módulo 9 funcione sin configurar nada.
+  </p>
+
+  <details>
+    <summary>El caso en que hace falta <code>@Unremovable</code></summary>
+    <p style="margin-top:0.6rem">
+      Implementaciones elegidas por configuración. Si tienes <code>StripeGateway</code> y
+      <code>PaypalGateway</code> y decides cuál usar leyendo una propiedad, ARC no ve que nadie
+      inyecte la que no se usa y la borra. Al cambiar la configuración, falla en runtime sobre una
+      clase que existe en el código fuente pero no en el binario.
+    </p>
+  </details>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>Build time o runtime: el candado</h2>
+    <p>
+      Algunas propiedades quedan <strong>congeladas en el artefacto</strong> durante la
+      augmentation. Cambiarlas exige recompilar; ninguna variable de entorno las mueve.
+    </p>
+    <p>
+      Parece un detalle de documentación hasta que te muerde — y en este proyecto mordió dos veces,
+      la última en el módulo 9:
+    </p>
+  </div>
+
+  <div class="bug">
+    <h3><code>quarkus.oidc.enabled=false</code> rompió el build</h3>
+    <p class="sym">UnsatisfiedResolutionException: Unsatisfied dependency for type JsonWebToken</p>
+    <p>
+      Es una propiedad de <strong>build time</strong>: apagarla hace que ARC no genere el bean
+      <code>JsonWebToken</code>, y la inyección de <code>ListingResource</code> se queda sin
+      resolver <em>al compilar</em>.
+    </p>
+    <p class="fix">
+      La equivalente de runtime es <code>quarkus.oidc.tenant-enabled</code>: los beans existen,
+      simplemente no se valida ningún token.
+    </p>
+  </div>
+
+  <div class="tablewrap">
+    <table>
+      <tr><th>Prioridad de configuración</th><th>Ejemplo</th></tr>
+      <tr><td>1. Propiedades de sistema</td><td><code>-Dquarkus.http.port=9000</code></td></tr>
+      <tr><td>2. Variables de entorno</td><td><code>QUARKUS_HTTP_PORT=9000</code></td></tr>
+      <tr><td>3. <code>.env</code></td><td></td></tr>
+      <tr><td>4. <code>application.properties</code></td><td>y dentro, <code>%perfil.</code> gana a la propiedad sin perfil</td></tr>
+    </table>
+  </div>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>Dev Services: la infraestructura, cableada sola</h2>
+    <p>
+      Al ver un driver declarado y ninguna URL configurada, Quarkus <strong>levanta el contenedor
+      por ti</strong> y conecta la aplicación. En este proyecto llegó a levantar cuatro cosas sin
+      una línea de configuración de conexión.
+    </p>
+  </div>
+
+  <div class="tablewrap">
+    <table>
+      <tr><th>Extensión declarada</th><th>Lo que aparece</th><th>Módulo</th></tr>
+      <tr><td><code>quarkus-jdbc-postgresql</code></td><td>PostgreSQL 18</td><td>3</td></tr>
+      <tr><td><code>quarkus-oidc</code></td><td>Keycloak 26</td><td>5</td></tr>
+      <tr><td><code>quarkus-messaging-kafka</code></td><td>Redpanda</td><td>7</td></tr>
+      <tr><td><code>quarkus-observability-devservices-lgtm</code></td><td>Grafana + Loki + Tempo + Prometheus</td><td>8</td></tr>
+    </table>
+  </div>
+
+  <p class="win">
+    La ventaja de fondo no es la comodidad: es que <strong>los tests corren contra el mismo motor
+    que producción</strong>. Usar H2 en test y PostgreSQL en producción es una fuente clásica de
+    bugs que solo aparecen al desplegar.
+  </p>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>Live reload, y lo que revela</h2>
+    <p>
+      Editar una clase y ver el cambio en la siguiente petición, en menos de medio segundo. Pero
+      atención al mensaje que aparece en el log:
+    </p>
+  </div>
+
+  <pre><span class="cm">Restarting quarkus due to changes in ProductListing.class</span></pre>
+
+  <p class="warn">
+    <strong>Restarting, no hot-swap.</strong> Quarkus vuelve a hacer la augmentation y reinicia la
+    aplicación. Los datos que hubiera en un <code>@ApplicationScoped</code> desaparecen — que es
+    justo lo que motivó pasar a persistencia de verdad en el módulo 3.
+  </p>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>El vocabulario, en una tabla</h2>
+  </div>
+  <div class="tablewrap">
+    <table>
+      <tr><th>Término</th><th>Qué es</th></tr>
+      <tr><td><strong>Augmentation</strong></td><td>La fase de compilación donde Quarkus hace el trabajo que otros hacen al arrancar.</td></tr>
+      <tr><td><strong>ARC</strong></td><td>El CDI de Quarkus, resuelto en build time. Genera <code>_Bean</code>, <code>_ClientProxy</code>, <code>_Subclass</code>.</td></tr>
+      <tr><td><strong>Jandex</strong></td><td>Índice de anotaciones offline, para no escanear con reflection.</td></tr>
+      <tr><td><strong><code>@Recorder</code></strong></td><td>Sus métodos no se ejecutan: se <em>graban</em> como bytecode que correrá al arrancar.</td></tr>
+      <tr><td><strong>Extensión</strong></td><td>Dos módulos: <code>deployment</code> (solo build) y <code>runtime</code> (lo que se empaqueta).</td></tr>
+      <tr><td><strong>Event loop</strong></td><td>Hilo de Vert.x que atiende el I/O de red. Bloquearlo es el pecado capital (módulo 4).</td></tr>
+      <tr><td><strong>Mandrel</strong></td><td>Distribución de GraalVM enfocada a Quarkus, para compilar a nativo (módulo 9).</td></tr>
+    </table>
+  </div>
+</section>
+
+<div class="pager">
+  <a href="index.html"><small>Anterior</small> ← Portada</a>
+  <a href="1-dominio.html"><small>Siguiente</small> Módulo 1 · Dominio con Java moderno →</a>
+</div>
+
+</div>
+
+<script>
+(function () {
+  var reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var tareas = [
+    { t: "escanear anotaciones del classpath", d: 260 },
+    { t: "resolver el grafo de inyección", d: 200 },
+    { t: "generar proxies dinámicos", d: 180 },
+    { t: "preparar el ORM", d: 220 },
+    { t: "leer y validar configuración", d: 120 }
+  ];
+  var cont = document.getElementById("boot");
+  var estado = document.getElementById("boot-status");
+
+  function carril(titulo, quarkus) {
+    var w = document.createElement("div");
+    w.style.cssText = "display:flex;flex-direction:column;gap:0.4rem";
+    var h = document.createElement("div");
+    h.style.cssText = "font-family:var(--sans);font-size:0.85rem;font-weight:650;display:flex;justify-content:space-between";
+    h.innerHTML = "<span>" + titulo + "</span><span class='lane-total' id='tot-" + (quarkus ? "q" : "t") + "'>—</span>";
+    w.appendChild(h);
+    var barras = [];
+    tareas.forEach(function (x) {
+      var row = document.createElement("div");
+      row.style.cssText = "display:flex;align-items:center;gap:0.7rem";
+      var lb = document.createElement("span");
+      lb.style.cssText = "font-family:var(--mono);font-size:0.68rem;color:var(--ink-soft);width:12rem;flex:none;text-align:right";
+      lb.textContent = x.t;
+      var tr = document.createElement("div");
+      tr.style.cssText = "position:relative;height:0.9rem;flex:1;background:var(--panel-2);border-radius:2px;overflow:hidden";
+      var fill = document.createElement("i");
+      fill.style.cssText = "display:block;height:100%;width:0%;background:" +
+        (quarkus ? "var(--accent)" : "var(--busy)") + ";transition:width .1s linear";
+      tr.appendChild(fill);
+      row.appendChild(lb); row.appendChild(tr);
+      w.appendChild(row);
+      barras.push({ fill: fill, dur: x.d });
+    });
+    cont.appendChild(w);
+    return barras;
+  }
+
+  var trad = carril("Framework tradicional — todo al arrancar", false);
+  var quark = carril("Quarkus — hecho al compilar, grabado como bytecode", true);
+
+  function reset() {
+    trad.concat(quark).forEach(function (b) { b.fill.style.width = "0%"; });
+    document.getElementById("tot-t").textContent = "—";
+    document.getElementById("tot-q").textContent = "—";
+  }
+
+  async function correr() {
+    reset();
+    if (reduced) {
+      trad.concat(quark).forEach(function (b) { b.fill.style.width = "100%"; });
+      document.getElementById("tot-t").textContent = "980 ms";
+      document.getElementById("tot-q").textContent = "0 ms al arrancar";
+      return;
+    }
+    estado.textContent = "Arrancando el tradicional… cada tarea, cada vez que el proceso empieza.";
+    var total = 0;
+    for (var i = 0; i < trad.length; i++) {
+      trad[i].fill.style.transition = "width " + (trad[i].dur / 1000) + "s linear";
+      trad[i].fill.style.width = "100%";
+      total += trad[i].dur;
+      await new Promise(function (r) { setTimeout(r, trad[i].dur); });
+      document.getElementById("tot-t").textContent = total + " ms";
+    }
+    estado.textContent = "980 ms de arranque. Ahora Quarkus: las mismas cinco tareas…";
+    await new Promise(function (r) { setTimeout(r, 700); });
+    quark.forEach(function (b) { b.fill.style.transition = "width .25s"; b.fill.style.width = "100%"; });
+    document.getElementById("tot-q").textContent = "0 ms al arrancar";
+    await new Promise(function (r) { setTimeout(r, 400); });
+    estado.textContent =
+      "…ya estaban hechas. El artefacto trae el resultado grabado como bytecode, así que arrancar es solo leerlo.";
+    estado.style.color = "var(--accent)";
+  }
+
+  document.getElementById("boot-play").addEventListener("click", correr);
+  if (!reduced) setTimeout(correr, 500); else correr();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,839 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Eventos, outbox y saga — la escritura dual y cómo se resuelve</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="wrap">
+
+<nav class="topnav">
+  <div class="crumbs"><a href="index.html">Quarkus a alta escala</a> <span>/</span> <span>Módulo 7</span></div>
+  <a href="bugs.html">Catálogo de fallos →</a>
+</nav>
+
+<header>
+  <p class="eyebrow">Módulo 7 · mensajería con Kafka</p>
+  <h1>Dos escrituras que no pueden ser atómicas</h1>
+  <p class="lede">
+    Confirmar una venta exige tocar PostgreSQL y Kafka. No hay ninguna transacción capaz de
+    abarcar las dos. Todo el módulo sale de ahí.
+  </p>
+</header>
+
+<section>
+  <div class="prose stack">
+    <h2>El problema, en seis líneas</h2>
+  </div>
+
+<pre class="bad"><span class="kw">@Transactional</span>
+<span class="kw">public void</span> confirm(ReservationId id) {
+    inventory.confirm(id);                       <span class="cm">// PostgreSQL</span>
+    kafka.send(<span class="kw">new</span> StockChanged(listingId, 7));  <span class="cm">// Kafka</span>
+}</pre>
+
+  <div class="prose stack">
+    <p>Parece razonable. Está roto, y <strong>de las dos maneras posibles</strong>:</p>
+  </div>
+
+  <div class="sim">
+    <div class="sim-head">
+      <div class="ctl">
+        <button id="dw-a">La BD confirma y Kafka falla</button>
+        <button id="dw-b">Kafka publica y la BD revierte</button>
+        <button class="alt" id="dw-reset">Reiniciar</button>
+      </div>
+    </div>
+    <div class="diagram" style="background:none;border:none;padding:0">
+      <svg viewBox="0 0 620 190" width="620" height="190" role="img" aria-label="La escritura dual">
+        <defs>
+          <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+          </marker>
+        </defs>
+        <g color="var(--ink-soft)">
+          <rect class="d-box" x="20" y="65" width="140" height="55" rx="3"/>
+          <text class="d-label" x="90" y="88" text-anchor="middle">confirm()</text>
+          <text class="d-sub" x="90" y="106" text-anchor="middle">@Transactional</text>
+
+          <rect id="dw-db" class="d-box" x="300" y="10" width="150" height="55" rx="3"/>
+          <text class="d-label" x="375" y="33" text-anchor="middle">PostgreSQL</text>
+          <text id="dw-db-t" class="d-sub" x="375" y="51" text-anchor="middle">stock actualizado</text>
+
+          <rect id="dw-kafka" class="d-box" x="300" y="120" width="150" height="55" rx="3"/>
+          <text class="d-label" x="375" y="143" text-anchor="middle">Kafka</text>
+          <text id="dw-kafka-t" class="d-sub" x="375" y="161" text-anchor="middle">evento publicado</text>
+
+          <path class="d-arrow" d="M 160 80 L 296 40"/>
+          <path class="d-arrow" d="M 160 105 L 296 145"/>
+
+          <text id="dw-msg" class="d-sub" x="540" y="95" text-anchor="middle" style="font-size:11px"></text>
+        </g>
+      </svg>
+    </div>
+    <div id="dw-status" class="status">Pulsa un escenario para ver qué queda inconsistente.</div>
+  </div>
+
+  <p class="warn">
+    <code>@Transactional</code> <strong>solo cubre la base de datos.</strong> Kafka no participa en
+    esa transacción, y no hay forma de arreglarlo dentro de ese método.
+  </p>
+
+  <details>
+    <summary>¿Y el compromiso en dos fases (2PC/XA)?</summary>
+    <p style="margin-top:0.6rem">
+      Existe y sí haría atómicas ambas escrituras. <strong>Nadie lo usa con Kafka:</strong> es
+      lento, exige que todos los participantes lo soporten, y si el coordinador cae en el momento
+      equivocado deja recursos bloqueados hasta que alguien intervenga a mano. La industria lo
+      abandonó.
+    </p>
+  </details>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>La solución: el patrón outbox</h2>
+    <p class="thesis">
+      Si no puedes hacer atómicas dos escrituras a sistemas distintos, haz que sean dos escrituras
+      al <em>mismo</em> sistema.
+    </p>
+    <p>
+      El evento se guarda como <strong>una fila más</strong>, en la misma transacción que el cambio
+      de negocio. O se guardan los dos, o ninguno. Después, un proceso aparte lo lleva a Kafka.
+    </p>
+  </div>
+
+<pre class="good">┌─ transacción de PostgreSQL ────────────────┐
+│  UPDATE stock_item SET reserved = ...       │
+│  INSERT INTO outbox_event (...)             │   <span class="cm">← el evento, como una fila más</span>
+└──────────────── commit atómico ────────────┘
+                    ↓
+   relay:  SELECT FROM outbox → publica en Kafka → marca como publicado</pre>
+
+  <p class="note">
+    Consecuencia práctica: quien llama a <code>outbox.publish(evento)</code>
+    <strong>no está publicando</strong>, está prometiendo publicar. El evento sale cuando el relay
+    lo recoja, un segundo después. Ese retardo es el precio, y es aceptable porque a cambio la
+    entrega deja de poder perderse.
+  </p>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>El flujo completo, en marcha</h2>
+    <p>
+      Desde que un comprador reserva hasta que el escaparate del catálogo enseña el número nuevo.
+      Cinco saltos, y uno de ellos es asíncrono.
+    </p>
+  </div>
+
+  <div class="sim">
+    <div class="sim-head">
+      <div class="ctl">
+        <button id="flow-play">Reservar 3 unidades</button>
+        <button class="alt" id="flow-kill">Matar el relay tras publicar</button>
+        <button class="alt" id="flow-reset">Reiniciar</button>
+      </div>
+    </div>
+
+    <div class="diagram" style="background:none;border:none;padding:0">
+      <svg viewBox="0 0 760 330" width="760" height="330" role="img" aria-label="Flujo del outbox">
+        <g color="var(--ink-soft)">
+          <rect id="f1" class="d-box" x="15" y="20" width="140" height="52" rx="3"/>
+          <text class="d-label" x="85" y="42" text-anchor="middle">Inventario</text>
+          <text class="d-sub" x="85" y="59" text-anchor="middle">reserve(3)</text>
+
+          <rect id="f2" class="d-box" x="15" y="130" width="140" height="52" rx="3"/>
+          <text class="d-label" x="85" y="152" text-anchor="middle">stock_item</text>
+          <text id="f2t" class="d-sub" x="85" y="169" text-anchor="middle">available = 10</text>
+
+          <rect id="f3" class="d-box" x="15" y="240" width="140" height="52" rx="3"/>
+          <text class="d-label" x="85" y="262" text-anchor="middle">outbox_event</text>
+          <text id="f3t" class="d-sub" x="85" y="279" text-anchor="middle">vacío</text>
+
+          <rect id="f4" class="d-box" x="290" y="240" width="150" height="52" rx="3"/>
+          <text class="d-label" x="365" y="262" text-anchor="middle">relay</text>
+          <text id="f4t" class="d-sub" x="365" y="279" text-anchor="middle">cada 1 s · SKIP LOCKED</text>
+
+          <rect id="f5" class="d-box" x="570" y="240" width="150" height="52" rx="3"/>
+          <text class="d-label" x="645" y="262" text-anchor="middle">Kafka</text>
+          <text id="f5t" class="d-sub" x="645" y="279" text-anchor="middle">marketplace-events</text>
+
+          <rect id="f6" class="d-box" x="570" y="130" width="150" height="52" rx="3"/>
+          <text class="d-label" x="645" y="152" text-anchor="middle">consumidor</text>
+          <text class="d-sub" x="645" y="169" text-anchor="middle">@Blocking</text>
+
+          <rect id="f7" class="d-box" x="570" y="20" width="150" height="52" rx="3"/>
+          <text class="d-label" x="645" y="42" text-anchor="middle">Catálogo</text>
+          <text id="f7t" class="d-sub" x="645" y="59" text-anchor="middle">escaparate = 10</text>
+
+          <path id="a1" class="d-arrow" d="M 85 72 L 85 126"/>
+          <path id="a2" class="d-arrow" d="M 85 182 L 85 236"/>
+          <path id="a3" class="d-arrow" d="M 155 266 L 286 266"/>
+          <path id="a4" class="d-arrow" d="M 440 266 L 566 266"/>
+          <path id="a5" class="d-arrow" d="M 645 240 L 645 186"/>
+          <path id="a6" class="d-arrow" d="M 645 130 L 645 76"/>
+
+          <rect x="175" y="200" width="145" height="20" rx="2" fill="none" stroke="var(--accent)" stroke-dasharray="3 3" opacity="0.6"/>
+          <text class="d-sub" x="247" y="214" text-anchor="middle" fill="var(--accent)">misma transacción</text>
+        </g>
+      </svg>
+    </div>
+
+    <div id="flow-status" class="status">Estado inicial · 10 unidades disponibles, bandeja vacía.</div>
+  </div>
+
+  <div class="cards">
+    <div class="card good">
+      <h3>Pasos 1–2: atómicos</h3>
+      <p>El contador y el evento se escriben juntos. Si algo falla, se deshacen los dos y no queda rastro de nada.</p>
+    </div>
+    <div class="card">
+      <h3>Paso 3: el retardo</h3>
+      <p>El relay sondea cada segundo. Ahí vive la consistencia eventual: el escaparate va atrasado un instante.</p>
+    </div>
+    <div class="card">
+      <h3>Paso 5: otro proceso</h3>
+      <p>El consumidor puede ejecutarse segundos después y en otra instancia. Por eso la traza tiene que viajar con el mensaje.</p>
+    </div>
+  </div>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>Por qué duplica, y por qué no se puede evitar</h2>
+    <p>Mira el relay con atención. Son tres pasos y el fallo puede caer entre dos de ellos:</p>
+  </div>
+
+  <div class="sim">
+    <div class="sim-head">
+      <button class="play" id="dup-play">Simular caída entre publicar y marcar</button>
+    </div>
+    <div id="dup-steps" style="display:flex;flex-direction:column;gap:0.5rem"></div>
+    <div id="dup-status" class="status">Pulsa para ver qué pasa al reiniciar.</div>
+  </div>
+
+  <div class="tablewrap">
+    <table>
+      <tr><th>Garantía</th><th>Qué significa</th></tr>
+      <tr><td><strong>at-most-once</strong></td><td>Puede perderse. Nunca duplica.</td></tr>
+      <tr><td><strong>at-least-once</strong></td><td>Nunca se pierde. Puede duplicar. <em>← lo que da el outbox</em></td></tr>
+      <tr><td><strong>exactly-once</strong></td><td>…no existe de extremo a extremo.</td></tr>
+    </table>
+  </div>
+
+  <p class="thesis">
+    «Exactly-once» es la mentira más repetida de los sistemas distribuidos. Kafka tiene una función
+    con ese nombre y es real, pero cubre Kafka-a-Kafka dentro de su propio mundo. En cuanto
+    interviene tu base de datos o una pasarela de pago, se acabó.
+  </p>
+
+  <pre class="good">at-least-once  +  consumidor idempotente  =  effectively once</pre>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>Las tres formas de ser idempotente</h2>
+    <p>De más barata a más cara. Se elige <strong>la más barata que sirva</strong>.</p>
+  </div>
+
+  <div class="cards">
+    <div class="card good">
+      <h3>1 · Por la forma del mensaje</h3>
+      <p>
+        Que el evento lleve el <strong>estado resultante</strong> y no el cambio. No hace falta
+        recordar nada.
+      </p>
+    </div>
+    <div class="card">
+      <h3>2 · Por diseño del estado</h3>
+      <p>
+        Que la operación solo sea posible una vez: <code>if (status != HELD) throw ...</code>. Es
+        segura de repetir porque el estado no deja repetirla.
+      </p>
+    </div>
+    <div class="card">
+      <h3>3 · Por registro de vistos</h3>
+      <p>
+        Una tabla <em>inbox</em> con los ids procesados. La más general y la única que sirve cuando
+        el efecto es irreversible —cobrar, enviar un correo—, pero añade una escritura por mensaje.
+      </p>
+    </div>
+  </div>
+
+  <div class="prose stack">
+    <h3>La primera, en nuestro código</h3>
+  </div>
+
+  <div class="sim">
+    <div class="sim-head">
+      <div class="ctl">
+        <button id="idem-state" aria-pressed="true">Evento con ESTADO</button>
+        <button id="idem-delta">Evento con INCREMENTO</button>
+      </div>
+    </div>
+    <pre id="idem-code" class="good"><span class="kw">record</span> StockChanged(String listingId, <span class="kw">int</span> onHand, <span class="kw">int</span> reserved, <mark><span class="kw">int</span> available</mark>)</pre>
+    <div id="idem-rows" style="display:flex;flex-direction:column;gap:0.4rem"></div>
+    <div id="idem-status" class="status"></div>
+    <div class="ctl"><button class="alt" id="idem-deliver">Entregar el mensaje otra vez</button></div>
+  </div>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>La clave de partición decide el orden</h2>
+    <p>
+      Kafka solo garantiza el orden <strong>dentro de una partición</strong>, nunca entre
+      particiones. Si los eventos de una misma publicación se reparten, el consumidor puede
+      aplicarlos al revés.
+    </p>
+  </div>
+
+  <div class="sim">
+    <div class="sim-head">
+      <div class="ctl">
+        <button id="part-good" aria-pressed="true">Clave = aggregate_id</button>
+        <button id="part-bad">Clave aleatoria</button>
+      </div>
+    </div>
+    <div id="part-view" style="display:grid;grid-template-columns:repeat(3,1fr);gap:0.8rem"></div>
+    <div id="part-status" class="status"></div>
+  </div>
+
+  <p class="warn">
+    Con claves distintas, el consumidor puede aplicar «stock = 9» <em>después</em> de «stock = 7» y
+    dejar el catálogo mintiendo <strong>de forma permanente</strong>: no llegará ningún evento nuevo
+    que lo corrija.
+  </p>
+
+  <p class="note">
+    Corolario que se olvida: <strong>el paralelismo máximo de un consumer group es el número de
+    particiones.</strong> Añadir instancias por encima de esa cifra no aporta nada; se quedan sin
+    trabajo.
+  </p>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2><code>SKIP LOCKED</code>: tres réplicas sin coordinador</h2>
+    <p>
+      Con tres instancias sondeando la misma tabla, las tres cogerían las mismas filas y
+      publicarían todo por triplicado.
+    </p>
+  </div>
+
+<pre class="good">select * from outbox_event
+ where published_at is null
+ order by occurred_at
+ limit 100
+   <mark>for update skip locked</mark></pre>
+
+  <div class="cards">
+    <div class="card bad">
+      <h3><code>FOR UPDATE</code> a secas</h3>
+      <p>Las otras dos <strong>esperan</strong>. Tres relays se convierten en uno con dos mirando.</p>
+    </div>
+    <div class="card good">
+      <h3><code>SKIP LOCKED</code></h3>
+      <p>«No esperes: sáltate lo que otro tiene cogido y llévate lo siguiente». Se reparten el trabajo solas.</p>
+    </div>
+  </div>
+
+  <p class="note">
+    Es el mecanismo con el que se construye <strong>una cola de trabajo sobre una tabla</strong>.
+    Merece recordarlo: para muchos sistemas eso basta y no hace falta Kafka en absoluto.
+  </p>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>La saga: cuando el negocio cruza la frontera</h2>
+    <p>
+      Comprar toca tres sitios, y uno es un sistema externo que no participa en ninguna transacción
+      tuya.
+    </p>
+  </div>
+
+  <div class="sim">
+    <div class="sim-head">
+      <div class="ctl">
+        <button id="saga-ok">Camino feliz</button>
+        <button id="saga-fail">Pago rechazado</button>
+        <button class="alt" id="saga-reset">Reiniciar</button>
+      </div>
+    </div>
+    <div id="saga-steps" style="display:flex;flex-direction:column;gap:0.5rem"></div>
+    <div id="saga-status" class="status">Tres pasos, cada uno en su propia transacción.</div>
+  </div>
+
+  <p class="thesis">
+    Una saga <strong>compensa, no revierte</strong>. No se puede «des-cobrar» una tarjeta: se emite
+    un reembolso, que es un hecho nuevo. Por eso es <em>eventualmente</em> coherente y no atómica —
+    hay instantes en los que el sistema está a medias, y el diseño tiene que soportarlo.
+  </p>
+
+  <div class="cards">
+    <div class="card">
+      <h3>Orquestación</h3>
+      <p>
+        El flujo se lee de arriba abajo en una clase. El precio es que ese coordinador conoce
+        varios contextos: acoplamiento consciente y <strong>localizado en un punto</strong>.
+      </p>
+    </div>
+    <div class="card">
+      <h3>Coreografía</h3>
+      <p>
+        Cada contexto reacciona a los eventos de los demás. Máximo desacoplamiento, pero
+        <strong>el flujo no está escrito en ningún sitio</strong> y los ciclos son fáciles de crear
+        sin querer.
+      </p>
+    </div>
+  </div>
+
+  <div class="prose stack">
+    <h3>Tres decisiones que se juzgan en una entrevista</h3>
+  </div>
+
+  <div class="buglist">
+    <div class="bug" style="border-left-color:var(--free)">
+      <h3>Ninguna transacción abierta durante el cobro</h3>
+      <p>
+        Una llamada a la pasarela tarda segundos. Con la transacción abierta retendría una conexión
+        todo ese tiempo: <strong>20 conexiones, 20 compras simultáneas y la aplicación entera deja
+        de responder</strong>. Cada paso abre y cierra la suya.
+      </p>
+    </div>
+    <div class="bug" style="border-left-color:var(--free)">
+      <h3>Reservar antes de cobrar</h3>
+      <p>
+        Al revés habría que reembolsar cuando no haya stock, y <strong>un reembolso siempre es peor
+        experiencia que un «no hay unidades»</strong>.
+      </p>
+    </div>
+    <div class="bug" style="border-left-color:var(--free)">
+      <h3>La clave de idempotencia debe ser estable</h3>
+      <p>
+        Se usa el id de la reserva, no un UUID nuevo por intento. Si la red cae después de que el
+        cargo se procese pero antes de recibir la respuesta, el reintento con la misma clave
+        <strong>devuelve el cargo original en lugar de cobrar dos veces</strong>.
+      </p>
+    </div>
+  </div>
+</section>
+
+<hr>
+
+<section>
+  <div class="prose stack">
+    <h2>Los fallos de este módulo</h2>
+  </div>
+  <div class="buglist">
+    <div class="bug">
+      <h3>El nombre del canal no es el nombre del tema</h3>
+      <p class="sym">SRMSG00073: cannot be used for both incoming and outgoing</p>
+      <p>SmallRye no deja usar el mismo <em>nombre de canal</em> para entrada y salida, aunque apunten al mismo <em>topic</em> de Kafka. Son cosas distintas.</p>
+      <p class="fix">Dos canales, <code>events-out</code> y <code>events-in</code>, sobre el mismo topic.</p>
+    </div>
+    <div class="bug">
+      <h3>El planificador publicando durante los tests</h3>
+      <p class="sym">Aserciones que pasan o fallan según el momento</p>
+      <p>Un relay disparándose cada segundo convierte cualquier comprobación sobre «lo pendiente» en una carrera.</p>
+      <p class="fix"><code>%test.quarkus.scheduler.enabled=false</code> y llamar a <code>publishPending()</code> explícitamente.</p>
+    </div>
+    <div class="bug">
+      <h3>Tests antiguos fallando por una fila de más</h3>
+      <p class="sym">expected: &lt;1&gt; but was: &lt;2&gt;, en otra clase</p>
+      <p>Los tests nuevos usan transacciones reales, así que <strong>lo que escriben, queda</strong>. Los antiguos, con <code>@TestTransaction</code>, asumen base vacía.</p>
+      <p class="fix">Quien no puede deshacer lo que escribe, recoge al salir: <code>@AfterEach</code>.</p>
+    </div>
+    <div class="bug">
+      <h3>Aserción sobre el JSON crudo</h3>
+      <p class="sym">payload.contains("\"available\":10") → false</p>
+      <p>Ata el test al formato exacto que produzca Jackson —espacios, orden de campos— y lo rompe por motivos ajenos a lo que prueba.</p>
+      <p class="fix">Deserializar y comprobar el objeto.</p>
+    </div>
+  </div>
+
+  <p class="note">
+    Los dos del medio comparten moraleja: <strong>al introducir asincronía, todo lo que antes era
+    determinista deja de serlo.</strong> El planificador apagado en test y el <code>@AfterEach</code>
+    son las dos medidas que devuelven el control.
+  </p>
+</section>
+
+<div class="pager">
+  <a href="6-inventario.html"><small>Anterior</small> ← Módulo 6 · Inventario</a>
+  <a href="8-resiliencia.html"><small>Siguiente</small> Módulo 8 · Resiliencia →</a>
+</div>
+
+</div>
+
+<script>
+(function () {
+  var reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var T = reduced ? 0 : 1;
+
+  function esperar(ms) { return new Promise(function (r) { setTimeout(r, ms * T); }); }
+
+  /* ---------- 1. escritura dual ---------- */
+  var db = document.getElementById("dw-db"), kafka = document.getElementById("dw-kafka");
+  var dbT = document.getElementById("dw-db-t"), kafkaT = document.getElementById("dw-kafka-t");
+  var msg = document.getElementById("dw-msg"), dwStatus = document.getElementById("dw-status");
+
+  function dwReset() {
+    db.setAttribute("class", "d-box"); kafka.setAttribute("class", "d-box");
+    dbT.textContent = "stock actualizado"; kafkaT.textContent = "evento publicado";
+    msg.textContent = "";
+    dwStatus.textContent = "Pulsa un escenario para ver qué queda inconsistente.";
+    dwStatus.style.color = "";
+  }
+  document.getElementById("dw-reset").addEventListener("click", dwReset);
+
+  document.getElementById("dw-a").addEventListener("click", async function () {
+    dwReset();
+    db.setAttribute("class", "d-box good"); dbT.textContent = "commit ✓";
+    await esperar(700);
+    kafka.setAttribute("class", "d-box bad"); kafkaT.textContent = "envío falló ✗";
+    msg.textContent = "evento perdido";
+    dwStatus.textContent =
+      "El stock bajó, pero nadie se entera. El catálogo miente PARA SIEMPRE: no llegará ningún evento que lo corrija.";
+    dwStatus.style.color = "var(--busy)";
+  });
+
+  document.getElementById("dw-b").addEventListener("click", async function () {
+    dwReset();
+    kafka.setAttribute("class", "d-box good"); kafkaT.textContent = "publicado ✓";
+    await esperar(700);
+    db.setAttribute("class", "d-box bad"); dbT.textContent = "rollback ✗";
+    msg.textContent = "evento fantasma";
+    dwStatus.textContent =
+      "Se anunció una venta que nunca ocurrió. Todos los consumidores reaccionan a un hecho falso.";
+    dwStatus.style.color = "var(--busy)";
+  });
+
+  /* ---------- 2. flujo del outbox ---------- */
+  var pasos = ["f1", "f2", "f3", "f4", "f5", "f6", "f7"].map(function (id) { return document.getElementById(id); });
+  var flechas = ["a1", "a2", "a3", "a4", "a5", "a6"].map(function (id) { return document.getElementById(id); });
+  var f2t = document.getElementById("f2t"), f3t = document.getElementById("f3t");
+  var f4t = document.getElementById("f4t"), f5t = document.getElementById("f5t"), f7t = document.getElementById("f7t");
+  var flowStatus = document.getElementById("flow-status");
+  var flowBusy = false;
+
+  function flowReset() {
+    pasos.forEach(function (p) { p.setAttribute("class", "d-box"); });
+    flechas.forEach(function (a) { a.setAttribute("class", "d-arrow"); });
+    f2t.textContent = "available = 10"; f3t.textContent = "vacío";
+    f4t.textContent = "cada 1 s · SKIP LOCKED"; f5t.textContent = "marketplace-events";
+    f7t.textContent = "escaparate = 10";
+    flowStatus.textContent = "Estado inicial · 10 unidades disponibles, bandeja vacía.";
+    flowStatus.style.color = "";
+  }
+  document.getElementById("flow-reset").addEventListener("click", flowReset);
+
+  async function correrFlujo(matarRelay) {
+    if (flowBusy) return;
+    flowBusy = true;
+    flowReset();
+
+    pasos[0].setAttribute("class", "d-box on");
+    flowStatus.textContent = "1 · El caso de uso reserva 3 unidades. Abre una transacción.";
+    await esperar(900);
+
+    flechas[0].setAttribute("class", "d-arrow on");
+    pasos[1].setAttribute("class", "d-box on");
+    f2t.textContent = "available = 7";
+    flowStatus.textContent = "2 · UPDATE stock_item — dentro de la transacción.";
+    await esperar(900);
+
+    flechas[1].setAttribute("class", "d-arrow on");
+    pasos[2].setAttribute("class", "d-box on");
+    f3t.textContent = "1 pendiente";
+    flowStatus.textContent =
+      "3 · INSERT en outbox_event — MISMA transacción. Aquí está toda la magia: o se guardan las dos cosas, o ninguna.";
+    await esperar(1400);
+
+    pasos[0].setAttribute("class", "d-box good");
+    pasos[1].setAttribute("class", "d-box good");
+    pasos[2].setAttribute("class", "d-box good");
+    flowStatus.textContent = "COMMIT ✓ · El cambio y su evento son ya inseparables.";
+    await esperar(1000);
+
+    flechas[2].setAttribute("class", "d-arrow on");
+    pasos[3].setAttribute("class", "d-box on");
+    f4t.textContent = "leyendo lote…";
+    flowStatus.textContent = "4 · El relay sondea y coge el pendiente con SELECT ... FOR UPDATE SKIP LOCKED.";
+    await esperar(1100);
+
+    flechas[3].setAttribute("class", "d-arrow on");
+    pasos[4].setAttribute("class", "d-box on");
+    f5t.textContent = "clave = listingId";
+    flowStatus.textContent = "5 · Publicado en Kafka, con el id del agregado como clave de partición.";
+    await esperar(1100);
+
+    if (matarRelay) {
+      pasos[3].setAttribute("class", "d-box bad");
+      f4t.textContent = "☠ muerto antes de marcar";
+      f3t.textContent = "1 pendiente (¡aún!)";
+      flowStatus.textContent =
+        "El relay murió ENTRE publicar y marcar. Al reiniciar volverá a leerlo y lo publicará otra vez: eso es at-least-once, y es inevitable.";
+      flowStatus.style.color = "var(--busy)";
+      flowBusy = false;
+      return;
+    }
+
+    f3t.textContent = "0 pendientes";
+    pasos[3].setAttribute("class", "d-box good");
+    await esperar(600);
+
+    flechas[4].setAttribute("class", "d-arrow on");
+    pasos[5].setAttribute("class", "d-box on");
+    flowStatus.textContent = "6 · El consumidor lo recibe. @Blocking, porque hace JDBC.";
+    await esperar(1000);
+
+    flechas[5].setAttribute("class", "d-arrow on");
+    pasos[6].setAttribute("class", "d-box good");
+    pasos[5].setAttribute("class", "d-box good");
+    pasos[4].setAttribute("class", "d-box good");
+    f7t.textContent = "escaparate = 7";
+    flowStatus.textContent =
+      "7 · Proyección actualizada y caché invalidada. Entre el paso 3 y este han pasado ~1 s: eso es la consistencia eventual.";
+    flowStatus.style.color = "var(--free)";
+    flowBusy = false;
+  }
+
+  document.getElementById("flow-play").addEventListener("click", function () { correrFlujo(false); });
+  document.getElementById("flow-kill").addEventListener("click", function () { correrFlujo(true); });
+
+  /* ---------- 3. duplicados ---------- */
+  var dupPasos = [
+    "1 · lee el evento de la tabla",
+    "2 · lo publica en Kafka",
+    "3 · lo marca como publicado"
+  ];
+  var dupCont = document.getElementById("dup-steps");
+  var dupEls = dupPasos.map(function (t) {
+    var d = document.createElement("div");
+    d.style.cssText = "font-family:var(--mono);font-size:0.82rem;padding:0.5rem 0.8rem;border-radius:3px;background:var(--panel-2);transition:all .25s";
+    d.textContent = t;
+    dupCont.appendChild(d);
+    return d;
+  });
+  var dupStatus = document.getElementById("dup-status");
+
+  document.getElementById("dup-play").addEventListener("click", async function () {
+    dupEls.forEach(function (d) { d.style.background = "var(--panel-2)"; d.style.color = ""; });
+    dupStatus.style.color = "";
+    dupEls[0].style.background = "var(--good-soft)";
+    dupStatus.textContent = "Leyendo…";
+    await esperar(700);
+    dupEls[1].style.background = "var(--good-soft)";
+    dupStatus.textContent = "Publicado en Kafka ✓ — el mensaje ya está fuera, no hay vuelta atrás.";
+    await esperar(900);
+    dupEls[2].style.background = "var(--bad-soft)";
+    dupEls[2].textContent = "3 · ☠ el proceso muere aquí";
+    dupStatus.textContent = "Al reiniciar, el evento sigue sin marcar: se vuelve a leer y se PUBLICA OTRA VEZ.";
+    dupStatus.style.color = "var(--busy)";
+    await esperar(1600);
+    dupEls[2].textContent = dupPasos[2];
+    dupStatus.textContent =
+      "Invertir los pasos 2 y 3 no arregla nada: cambiaría duplicar por PERDER. Son las dos únicas opciones que existen.";
+  });
+
+  /* ---------- 4. idempotencia ---------- */
+  var idemRows = document.getElementById("idem-rows");
+  var idemStatus = document.getElementById("idem-status");
+  var idemCode = document.getElementById("idem-code");
+  var conEstado = true, valor = 10, entregas = 0;
+
+  function pintarIdem() {
+    idemRows.innerHTML = "";
+    var d = document.createElement("div");
+    d.style.cssText = "font-family:var(--mono);font-size:0.85rem;display:flex;gap:1rem;align-items:center";
+    d.innerHTML = "<span style='color:var(--ink-soft)'>catálogo:</span> <strong style='font-size:1.4rem'>" +
+      valor + "</strong> <span style='color:var(--ink-soft)'>disponibles</span>";
+    idemRows.appendChild(d);
+  }
+
+  function resetIdem() {
+    valor = 10; entregas = 0;
+    if (conEstado) {
+      idemCode.className = "good";
+      idemCode.innerHTML = '<span class="kw">record</span> StockChanged(String listingId, <span class="kw">int</span> onHand, <span class="kw">int</span> reserved, <mark><span class="kw">int</span> available</mark>)';
+      idemStatus.textContent = 'El mensaje dice «quedan 7». Aplicarlo escribe 7, venga las veces que venga.';
+    } else {
+      idemCode.className = "bad";
+      idemCode.innerHTML = '<span class="kw">record</span> StockReserved(String listingId, <mark><span class="kw">int</span> units</mark>)';
+      idemStatus.textContent = 'El mensaje dice «se reservaron 3». Aplicarlo RESTA 3 cada vez que llega.';
+    }
+    idemStatus.style.color = "";
+    pintarIdem();
+  }
+
+  document.getElementById("idem-state").addEventListener("click", function () {
+    conEstado = true;
+    this.setAttribute("aria-pressed", "true");
+    document.getElementById("idem-delta").setAttribute("aria-pressed", "false");
+    resetIdem();
+  });
+  document.getElementById("idem-delta").addEventListener("click", function () {
+    conEstado = false;
+    this.setAttribute("aria-pressed", "true");
+    document.getElementById("idem-state").setAttribute("aria-pressed", "false");
+    resetIdem();
+  });
+
+  document.getElementById("idem-deliver").addEventListener("click", function () {
+    entregas++;
+    if (conEstado) {
+      valor = 7;
+      idemStatus.textContent = "Entrega nº " + entregas + " · sigue en 7. Idempotente por la forma del mensaje.";
+      idemStatus.style.color = entregas > 1 ? "var(--free)" : "";
+    } else {
+      valor = valor - 3;
+      idemStatus.textContent = entregas === 1
+        ? "Entrega nº 1 · 10 − 3 = 7. Correcto… de momento."
+        : "Entrega nº " + entregas + " · " + valor + " disponibles. Se ha descontado stock que nadie compró.";
+      idemStatus.style.color = entregas > 1 ? "var(--busy)" : "";
+    }
+    pintarIdem();
+  });
+  resetIdem();
+
+  /* ---------- 5. particiones ---------- */
+  var partView = document.getElementById("part-view");
+  var partStatus = document.getElementById("part-status");
+
+  function pintarParticiones(buena) {
+    partView.innerHTML = "";
+    var eventos = [
+      { t: "stock=9", p: buena ? 1 : 0 },
+      { t: "stock=8", p: buena ? 1 : 2 },
+      { t: "stock=7", p: buena ? 1 : 1 }
+    ];
+    for (var i = 0; i < 3; i++) {
+      var col = document.createElement("div");
+      col.style.cssText = "border:1px solid var(--line);border-radius:3px;padding:0.6rem;background:var(--panel-2);min-height:6rem";
+      var h = document.createElement("div");
+      h.style.cssText = "font-family:var(--mono);font-size:0.7rem;color:var(--ink-soft);margin-bottom:0.5rem";
+      h.textContent = "partición " + i;
+      col.appendChild(h);
+      eventos.filter(function (e) { return e.p === i; }).forEach(function (e) {
+        var b = document.createElement("div");
+        b.style.cssText = "font-family:var(--mono);font-size:0.75rem;background:var(--accent-soft);border-radius:2px;padding:0.3rem 0.5rem;margin-bottom:0.3rem";
+        b.textContent = e.t;
+        col.appendChild(b);
+      });
+      partView.appendChild(col);
+    }
+    if (buena) {
+      partStatus.textContent =
+        "Los tres eventos de la misma publicación caen en la misma partición. Llegan en orden: 9 → 8 → 7. El catálogo acaba en 7. ✓";
+      partStatus.style.color = "var(--free)";
+    } else {
+      partStatus.textContent =
+        "Repartidos entre particiones. El consumidor puede aplicar 9 DESPUÉS de 7, y el catálogo se queda en 9 para siempre. ✗";
+      partStatus.style.color = "var(--busy)";
+    }
+  }
+  document.getElementById("part-good").addEventListener("click", function () {
+    this.setAttribute("aria-pressed", "true");
+    document.getElementById("part-bad").setAttribute("aria-pressed", "false");
+    pintarParticiones(true);
+  });
+  document.getElementById("part-bad").addEventListener("click", function () {
+    this.setAttribute("aria-pressed", "true");
+    document.getElementById("part-good").setAttribute("aria-pressed", "false");
+    pintarParticiones(false);
+  });
+  pintarParticiones(true);
+
+  /* ---------- 6. saga ---------- */
+  var sagaDefs = [
+    { t: "1 · reservar 3 unidades", c: "Inventario · transacción propia" },
+    { t: "2 · cobrar 75,00 EUR", c: "Pasarela externa · SIN transacción abierta" },
+    { t: "3 · confirmar la reserva", c: "Inventario · transacción propia" }
+  ];
+  var sagaCont = document.getElementById("saga-steps");
+  var sagaStatus = document.getElementById("saga-status");
+  var sagaEls = sagaDefs.map(function (s) {
+    var d = document.createElement("div");
+    d.style.cssText = "padding:0.6rem 0.9rem;border-radius:3px;background:var(--panel-2);border-left:3px solid var(--line);transition:all .25s";
+    d.innerHTML = "<div style='font-family:var(--sans);font-weight:650;font-size:0.9rem'>" + s.t +
+      "</div><div style='font-family:var(--mono);font-size:0.7rem;color:var(--ink-soft)'>" + s.c + "</div>";
+    sagaCont.appendChild(d);
+    return d;
+  });
+
+  function sagaReset() {
+    sagaEls.forEach(function (d, i) {
+      d.style.background = "var(--panel-2)";
+      d.style.borderLeftColor = "var(--line)";
+      d.querySelector("div").textContent = sagaDefs[i].t;
+    });
+    var comp = document.getElementById("saga-comp");
+    if (comp) comp.remove();
+    sagaStatus.textContent = "Tres pasos, cada uno en su propia transacción.";
+    sagaStatus.style.color = "";
+  }
+  document.getElementById("saga-reset").addEventListener("click", sagaReset);
+
+  document.getElementById("saga-ok").addEventListener("click", async function () {
+    sagaReset();
+    for (var i = 0; i < 3; i++) {
+      sagaEls[i].style.background = "var(--good-soft)";
+      sagaEls[i].style.borderLeftColor = "var(--free)";
+      sagaStatus.textContent = sagaDefs[i].t + " ✓";
+      await esperar(800);
+    }
+    sagaStatus.textContent = "Compra completada. 7 disponibles, 0 reservadas, cargo emitido.";
+    sagaStatus.style.color = "var(--free)";
+  });
+
+  document.getElementById("saga-fail").addEventListener("click", async function () {
+    sagaReset();
+    sagaEls[0].style.background = "var(--good-soft)";
+    sagaEls[0].style.borderLeftColor = "var(--free)";
+    sagaStatus.textContent = "1 · Reservadas 3 unidades. Quedan 7 disponibles.";
+    await esperar(900);
+
+    sagaEls[1].style.background = "var(--bad-soft)";
+    sagaEls[1].style.borderLeftColor = "var(--busy)";
+    sagaEls[1].querySelector("div").textContent = "2 · ✗ PaymentDeclinedException";
+    sagaStatus.textContent = "2 · Tarjeta rechazada. Es un resultado de NEGOCIO: no se reintenta.";
+    sagaStatus.style.color = "var(--busy)";
+    await esperar(1200);
+
+    var comp = document.createElement("div");
+    comp.id = "saga-comp";
+    comp.style.cssText = "padding:0.6rem 0.9rem;border-radius:3px;background:var(--accent-soft);border-left:3px solid var(--accent)";
+    comp.innerHTML = "<div style='font-family:var(--sans);font-weight:650;font-size:0.9rem'>↩ COMPENSACIÓN · liberar la reserva</div>" +
+      "<div style='font-family:var(--mono);font-size:0.7rem;color:var(--ink-soft)'>las 3 unidades vuelven al inventario</div>";
+    sagaCont.appendChild(comp);
+    sagaStatus.textContent =
+      "Sin compensación, esas 3 unidades quedarían apartadas 15 minutos por cada tarjeta rechazada.";
+    await esperar(1300);
+    sagaStatus.textContent =
+      "10 disponibles otra vez. Un fallo a mitad no dejó rastro — y si la compensación fallara, la reserva caduca sola.";
+    sagaStatus.style.color = "var(--free)";
+  });
+})();
+</script>
+</body>
+</html>

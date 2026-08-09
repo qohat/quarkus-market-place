@@ -1,6 +1,7 @@
 package com.marketplace.catalog.infrastructure.messaging;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.marketplace.catalog.application.ListingCatalog;
 import com.marketplace.inventory.domain.event.StockChanged;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -56,12 +57,15 @@ public class StockProjectionUpdater {
 
     private final EntityManager entityManager;
     private final ObjectMapper json;
+    private final ListingCatalog catalog;
     private final Counter aplicados;
     private final Counter ignorados;
 
-    StockProjectionUpdater(EntityManager entityManager, ObjectMapper json, MeterRegistry registry) {
+    StockProjectionUpdater(EntityManager entityManager, ObjectMapper json,
+                           ListingCatalog catalog, MeterRegistry registry) {
         this.entityManager = entityManager;
         this.json = json;
+        this.catalog = catalog;
         // Etiquetas de cardinalidad acotada: dos valores. El listingId NO va aquí — sería una
         // serie temporal por publicación y haría explotar Prometheus. Los identificadores van
         // en las trazas, que sí están pensadas para alta cardinalidad.
@@ -128,6 +132,20 @@ public class StockProjectionUpdater {
                 .executeUpdate();
 
         aplicados.increment();
+
+        // INVALIDACIÓN DIRIGIDA (módulo 9).
+        //
+        // La caché del catálogo se vacía aquí, y no con un tiempo de expiración, porque este
+        // evento es exactamente la señal de que los datos cambiaron. Es el lujo que da tener
+        // eventos: en vez de servir datos viejos «hasta que caduque», se invalida cuando hay
+        // motivo y solo entonces.
+        //
+        // El orden importa: primero se escribe, después se invalida. Al revés habría una ventana
+        // en la que otra petición repuebla la caché con el valor ANTIGUO y lo deja fijado hasta
+        // la siguiente invalidación — un dato obsoleto que ya nadie corrige.
+        if (filas > 0) {
+            catalog.invalidateBrowseCache();
+        }
 
         if (filas == 0) {
             // Legítimo: un servicio reservable no tiene stock, y una publicación borrada tampoco.

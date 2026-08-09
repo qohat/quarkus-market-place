@@ -14,6 +14,8 @@ import com.marketplace.shared.domain.Money;
 import com.marketplace.shared.domain.Page;
 import com.marketplace.shared.domain.PageRequest;
 import com.marketplace.shared.domain.SellerId;
+import io.quarkus.cache.CacheInvalidateAll;
+import io.quarkus.cache.CacheResult;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.transaction.Transactional;
 
@@ -103,9 +105,54 @@ public class ListingCatalog {
         return repository.findById(id).orElseThrow(() -> new ListingNotFoundException(id));
     }
 
-    /** El catálogo público: lo que ve un comprador. */
+    /**
+     * El catálogo público: lo que ve un comprador.
+     *
+     * <h3>Por qué SE CACHEA esto y no otra cosa</h3>
+     *
+     * Es la consulta más ejecutada del sistema con diferencia —todo el mundo mira el escaparate,
+     * casi nadie publica— y su resultado es el mismo para todos los visitantes. Ese es el perfil
+     * exacto de lo que merece caché: <strong>mucha lectura, poca escritura y resultado
+     * compartido</strong>.
+     *
+     * <p>{@code ownedBy} NO se cachea aunque se le parezca: su resultado depende del vendedor, así
+     * que habría una entrada por usuario, con una tasa de acierto pésima y consumiendo memoria
+     * para servir a una sola persona. Cachear lo que no se comparte es pagar memoria por nada.
+     *
+     * <h3>La clave es el PageRequest completo</h3>
+     *
+     * Sin argumentos, Quarkus usaría una clave por defecto y devolvería la misma página para
+     * cualquier petición. Con {@code PageRequest} como clave —un record, con equals y hashCode
+     * correctos— cada combinación de página y tamaño tiene su entrada. Que sea un record y no
+     * dos ints sueltos es lo que hace esto seguro.
+     */
+    @CacheResult(cacheName = "catalog-browse")
     public Page<Listing> browse(PageRequest pageRequest) {
         return repository.findVisible(pageRequest);
+    }
+
+    /**
+     * Vacía la caché del catálogo.
+     *
+     * <h3>Invalidación DIRIGIDA, no por tiempo</h3>
+     *
+     * La forma habitual de invalidar es poner un tiempo de expiración y aceptar servir datos
+     * viejos hasta que venza. Aquí no hace falta: el módulo 7 dejó un evento que dice
+     * exactamente cuándo el stock cambió, así que la caché se vacía <strong>cuando hay motivo</strong>.
+     *
+     * <p>Se invalida el caché ENTERO y no una entrada concreta, y es deliberado: un cambio de
+     * stock puede alterar qué publicaciones son visibles y, con ello, el reparto de TODAS las
+     * páginas. Invalidar solo la página que contenía esa publicación dejaría las demás
+     * descuadradas, que es peor que un fallo de caché.
+     *
+     * <p>Es el compromiso clásico: {@code @CacheInvalidateAll} es más agresivo pero siempre
+     * correcto; la invalidación selectiva rinde más y es fácil equivocarse. Con una caché que se
+     * repuebla en una consulta, la correcta gana.
+     */
+    @CacheInvalidateAll(cacheName = "catalog-browse")
+    public void invalidateBrowseCache() {
+        // El cuerpo está vacío a propósito: todo el trabajo lo hace el interceptor. Es un método
+        // que existe para colgar de él una anotación.
     }
 
     /** El panel de un vendedor: incluye sus borradores y archivadas. */
@@ -116,14 +163,28 @@ public class ListingCatalog {
 
     // ------------------------------------------------------- ciclo de vida
 
+    /*
+     * @CacheInvalidateAll va en los métodos PÚBLICOS y no en transitionTo, aunque este sea el
+     * único camino real. Dos razones, y la segunda es la que importa:
+     *
+     * 1. transitionTo es privado, así que ningún interceptor puede envolverlo.
+     * 2. Aunque fuera público, llamarlo desde aquí NO pasaría por el interceptor: CDI solo
+     *    intercepta las llamadas que entran desde FUERA del bean. Es la misma regla que obligó
+     *    a crear TransactionalRunner en el módulo 6 y a sacar `reserve` a su propio método en
+     *    la saga del 7. Tercera vez que aparece en el curso, y sigue siendo el error de CDI
+     *    que más tiempo cuesta diagnosticar, porque el código parece correcto.
+     */
+    @CacheInvalidateAll(cacheName = "catalog-browse")
     public Listing publish(ListingId id, SellerId requester) {
         return transitionTo(id, ListingStatus.PUBLISHED, requester);
     }
 
+    @CacheInvalidateAll(cacheName = "catalog-browse")
     public Listing pause(ListingId id, SellerId requester) {
         return transitionTo(id, ListingStatus.PAUSED, requester);
     }
 
+    @CacheInvalidateAll(cacheName = "catalog-browse")
     public Listing archive(ListingId id, SellerId requester) {
         return transitionTo(id, ListingStatus.ARCHIVED, requester);
     }

@@ -1,0 +1,18 @@
+# Imagen JVM con Java 25.
+#
+# El Dockerfile.jvm que genera Quarkus usa una base con Java 21, y nuestro bytecode es 25
+# (class file version 69). El síntoma es un UnsupportedClassVersionError al arrancar.
+#
+# Es la TERCERA vez que la desalineación de versiones de Java muerde en este curso: primero el
+# daemon de Gradle en el módulo 4, luego el toolchain, y ahora la imagen base. La lección es que
+# «uso Java 25» no es una propiedad del proyecto sino de CADA proceso que toca su bytecode.
+FROM eclipse-temurin:25-jre
+
+WORKDIR /work
+COPY build/quarkus-app/lib/ /work/lib/
+COPY build/quarkus-app/*.jar /work/
+COPY build/quarkus-app/app/ /work/app/
+COPY build/quarkus-app/quarkus/ /work/quarkus/
+
+EXPOSE 8080
+ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS_APPEND -jar /work/quarkus-run.jar"]

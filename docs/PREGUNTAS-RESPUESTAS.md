@@ -1408,3 +1408,156 @@ correlacionar es buscar por marcas de tiempo.
 
 Y una advertencia de coste: en producción **se muestrea**. Una traza por petición a gran escala
 cuesta más en almacenamiento y ancho de banda que el propio servicio.
+
+---
+
+# Módulo 9 — Escala y producción
+
+### 9.1 · ¿Qué hace realmente el compilador nativo, y por qué Quarkus encaja tan bien?
+
+`native-image` hace **análisis estático de accesibilidad**: parte del `main()`, sigue cada llamada
+y cada campo, construye el grafo de todo lo alcanzable y **tira el resto** — de tu código, de las
+dependencias y del JDK. El resultado es un ejecutable que lleva dentro una JVM reducida
+(**SubstrateVM**) sin cargador de clases, sin intérprete y sin JIT.
+
+La consecuencia es la **suposición de mundo cerrado**: todo debe ser predecible al compilar. Eso
+rompe reflection, proxies dinámicos, serialización, carga de recursos y JNI — y lo peligroso es que
+**no falla al compilar**, falla en runtime y solo en la rama que usa esa clase.
+
+Quarkus encaja porque **ya no usa nada de eso en runtime**, y no por contenerse: lo había resuelto
+para arrancar rápido en JVM. ARC resuelve la inyección al compilar, los invokers REST son clases
+generadas, hasta los serializadores de Jackson existen como ficheros. El análisis los encuentra
+porque alguien los llama explícitamente.
+
+**Nativo no es una funcionalidad añadida de Quarkus: es la consecuencia de su diseño.**
+
+### 9.2 · ¿Por qué un binario nativo arranca en 90 ms?
+
+No porque haga lo mismo más rápido, sino porque **ya está hecho**.
+
+Un arranque de JVM lee miles de `.class` del disco, verifica su bytecode, ejecuta los
+inicializadores estáticos e interpreta mientras el JIT observa. El binario nativo se salta todo:
+durante la compilación, GraalVM **ejecuta los inicializadores estáticos y guarda el estado de
+memoria resultante dentro del ejecutable** —el *image heap*—, que al arrancar simplemente se mapea
+en memoria.
+
+Los objetos de configuración y las estructuras del framework **ya existen** cuando el proceso
+arranca. No se construyen: se leen del fichero.
+
+Es la misma idea que la augmentation de Quarkus —mover trabajo a build time— llevada un paso más
+allá.
+
+### 9.3 · ¿Nativo es más rápido que JVM?
+
+**No, y decirlo así es el error.** Arranca antes y ocupa mucha menos memoria; en régimen permanente
+con CPU saturada, **el JIT gana**, porque optimiza con el perfil real de ejecución —qué ramas se
+toman, qué tipos aparecen— y puede desoptimizar y recompilar. Un binario nativo se optimizó una
+sola vez y a ciegas.
+
+Nuestra medición, mismo código y mismo entorno:
+
+| | JVM | Nativo |
+|---|---:|---:|
+| Arranque | 1,93 s | **0,09 s** |
+| Memoria | 406 MiB | **36 MiB** |
+| Throughput | 1 864 req/s | 1 844 req/s |
+
+**Y el empate del throughput es lo interesante.** La desventaja teórica no apareció porque el
+cuello de botella eran los 200 hilos del worker pool esperando I/O, no la CPU: `200 / 0,1 s = 2 000
+req/s` de techo, y los dos chocan contra él. La misma lección del módulo 4 — el recurso escaso
+manda, y casi nunca es el que uno tiene en la cabeza.
+
+La regla: **nativo cuando el arranque o la memoria sean el problema** (serverless, escalado a cero,
+muchas réplicas pequeñas); **JVM cuando lo sea el throughput sostenido con CPU saturada**. Y un
+argumento económico que se olvida: 11× menos memoria son 11× más réplicas por el mismo dinero.
+
+### 9.4 · ¿Qué merece la pena cachear, y qué no?
+
+Lo que se lee mucho, se escribe poco y **cuyo resultado es compartido**.
+
+En nuestro catálogo, `browse()` cumple los tres: todo el mundo mira el escaparate y ven lo mismo.
+`ownedBy(seller)` se le parece pero **su resultado depende del usuario**: habría una entrada por
+persona, con una tasa de acierto pésima y memoria gastada para servir a uno solo. **Cachear lo que
+no se comparte es pagar memoria por nada.**
+
+Dos detalles que se valoran:
+
+- **La clave debe incluir todos los argumentos que cambian el resultado.** Aquí es el
+  `PageRequest` completo; si no, todas las páginas devolverían la primera.
+- **Una caché sin límite de tamaño es una fuga de memoria con otro nombre.**
+
+### 9.5 · ¿Invalidación por tiempo o por evento?
+
+**Por evento siempre que se pueda**, y por tiempo solo como red de seguridad.
+
+Un tiempo de expiración es aceptar servir datos viejos «por si acaso» durante una ventana fija. Si
+ya tienes un evento que dice cuándo cambiaron los datos —y con un outbox lo tienes—, la
+invalidación deja de ser adivinar: se vacía cuando hay motivo.
+
+El orden importa: **primero escribir, después invalidar**. Al revés hay una ventana en la que otra
+petición repuebla la caché con el valor *antiguo* y lo deja fijado hasta la siguiente invalidación.
+
+Y la trampa que nos costó un test rojo: **hay que enumerar TODAS las vías de cambio**. Nuestra
+invalidación cubría el stock, pero *archivar* una publicación la retira del escaparate sin generar
+ningún evento de inventario, así que la caché la seguía mostrando. **La caché no introdujo un fallo
+evidente: introdujo uno que solo aparece si alguien mira.**
+
+### 9.6 · ¿Por qué un cubo de fichas y no un contador por minuto?
+
+Porque **tolera ráfagas**, que es como se comporta un cliente legítimo.
+
+Un cubo acumula fichas mientras el cliente está callado y le deja gastarlas de golpe: exactamente
+lo que hace una pantalla al abrirse y lanzar cinco peticiones seguidas. Un contador por ventana fija
+rechazaría esa ráfaga y, además, **dejaría pasar el doble del límite justo en el cambio de
+ventana** —el final de un minuto y el principio del siguiente—.
+
+Tres decisiones que acompañan:
+
+- **Limitar por usuario autenticado antes que por IP**: detrás de una IP puede haber una empresa
+  entera saliendo por el mismo NAT.
+- **Los health checks van exentos.** Si Kubernetes recibe 429 al sondear un servicio saturado, lo
+  saca del balanceador y con liveness lo reinicia: el control de admisión habría convertido una
+  sobrecarga pasajera en una caída.
+- **`Retry-After` no es decoración**: sin ella el cliente reintenta a ciegas.
+
+Y hay que saber decir sus límites: **es por instancia** —con tres réplicas el límite real es el
+triple— y el mapa de clientes crece sin caducidad. Por eso, en la práctica, esto suele vivir en el
+balanceador o en la pasarela de API, donde el límite sí es global.
+
+### 9.7 · Mides dos versiones y una da 30 veces más throughput. ¿Qué haces?
+
+**No te lo crees, y miras los códigos de estado.**
+
+Nos pasó: la variante JVM daba 53 220 req/s contra 1 861 del nativo, sobre un endpoint que duerme
+100 ms. Ese número es **aritméticamente imposible** —con 200 workers el techo es 2 000 req/s—, y la
+explicación estaba en la distribución de respuestas: 192 000 de aquellas «peticiones servidas» eran
+**429 del rate limiter**. Se estaba midiendo la velocidad de rechazar, no la de servir.
+
+La causa de fondo fue peor: **las dos versiones no tenían el mismo código**. El binario nativo se
+había compilado antes de añadir el rate limiter. Es el error que ya habíamos documentado en el
+módulo 4 —cambiar dos variables y atribuir la diferencia a la que uno tenía en mente— repetido a
+pesar de tenerlo escrito.
+
+Lo que se busca en la respuesta:
+
+1. **Comprobar que las dos cosas comparadas son de verdad iguales salvo en la variable de estudio.**
+2. **Contrastar el número con la aritmética que ya conoces** (ley de Little, tamaño de pools). Un
+   resultado que no puedes explicar es un resultado equivocado.
+3. **Mirar qué se está midiendo**: códigos de estado, tamaños de respuesta, errores del cliente.
+
+### 9.8 · ¿Qué se rompe al llevar a producción una aplicación que funciona en tu máquina?
+
+Nuestra lista, toda de fallos reales de este módulo:
+
+- **El binario nativo es de un SO y una arquitectura.** Compilado en un contenedor Linux, no se
+  ejecuta en macOS: `exec format error`. No hay «compila una vez, ejecuta donde sea».
+- **La versión de Java tiene que coincidir en cada proceso que toque el bytecode**: el daemon de
+  Gradle, el toolchain de compilación y la imagen base del contenedor. Nos mordió tres veces en el
+  curso, y la tercera fue un `UnsupportedClassVersionError` con la imagen base en Java 21.
+- **El perfil de build queda grabado en el artefacto**, y sus propiedades con prefijo ganan a las
+  variables de entorno que uno esperaba que mandaran.
+- **Build time y runtime no son lo mismo.** `quarkus.oidc.enabled` es de build: apagarla elimina
+  beans y rompe la inyección *al compilar*. La equivalente de runtime es `tenant-enabled`.
+
+El patrón común: **casi nada de esto falla en tu máquina**, porque en tu máquina Dev Services te lo
+cablea todo y el perfil por defecto es el que esperabas.

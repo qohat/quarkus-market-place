@@ -38,6 +38,9 @@ dependencies {
     implementation 'io.quarkus:quarkus-messaging-kafka'
     // El relay del outbox y el barrido de reservas caducadas necesitan ejecución periódica.
     implementation 'io.quarkus:quarkus-scheduler'
+    // Caché en memoria (módulo 9). @CacheResult / @CacheInvalidate como interceptores
+    // generados en build time, sin proxies dinámicos: por eso funciona en nativo.
+    implementation 'io.quarkus:quarkus-cache'
     // Resiliencia (módulo 8). MicroProfile Fault Tolerance: @Timeout, @Retry, @CircuitBreaker
     // y @Fallback como interceptores generados en build time.
     implementation 'io.quarkus:quarkus-smallrye-fault-tolerance'

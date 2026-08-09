@@ -36,7 +36,7 @@ usando Java 25 y Quarkus 3.38, hasta llegar a sistemas distribuidos a escala.
 | 6 | Bounded contexts e inventario | ✅ | [06-bounded-contexts-e-inventario.md](06-bounded-contexts-e-inventario.md) |
 | 7 | Mensajería: Kafka, outbox y saga | ✅ | [07-mensajeria-outbox-y-saga.md](07-mensajeria-outbox-y-saga.md) |
 | 8 | Resiliencia y observabilidad | ✅ | [08-resiliencia-y-observabilidad.md](08-resiliencia-y-observabilidad.md) |
-| 9 | Escala y producción | 🔄 siguiente | — |
+| 9 | Escala y producción | ✅ | [09-escala-y-produccion.md](09-escala-y-produccion.md) |
 
 ### Qué se cubre en cada uno
 
@@ -76,8 +76,9 @@ los fallos y midiendo los intentos reales**, no solo anotando. Cola de mensajes 
 mensaje envenenado. OpenTelemetry con la traza sobreviviendo al salto por Kafka, métricas de
 cardinalidad acotada y la diferencia entre liveness y readiness.
 
-**9 · Escala y producción** — Caché, rate limiting, compilación nativa con Mandrel, contenedores,
-Kubernetes, autoescalado y prueba de carga.
+**9 · Escala y producción** — Compilación nativa con Mandrel **medida contra la JVM**: 21× más
+rápido al arrancar, 11× menos memoria y el mismo throughput. Caché con invalidación dirigida por
+evento y control de admisión con cubo de fichas.
 
 ## Requisitos del entorno
 

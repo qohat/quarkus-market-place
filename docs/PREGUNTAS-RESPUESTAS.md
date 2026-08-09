@@ -883,3 +883,188 @@ roles— y otro con la firma manipulada que debe dar 401.
 **El error a evitar es quedarse solo en la capa intermedia.** `@TestSecurity` se salta toda la
 validación del token por diseño; si es lo único que tienes, no estás probando tu seguridad, estás
 probando tus anotaciones.
+
+---
+
+# Módulo 6 — Bounded contexts e inventario
+
+### 6.1 · ¿Qué es un bounded context y por qué no vale un modelo único para toda la aplicación?
+
+Un bounded context es un límite dentro del cual un modelo tiene un significado único. La idea que
+importa es que **la misma palabra significa cosas distintas según quién pregunte**, y eso no es un
+problema a resolver sino la realidad a modelar.
+
+En un marketplace, un *listing* es tres cosas: en Catálogo, algo que se muestra —título, precio,
+fotos—; en Inventario, un contador de unidades; en Pedidos, una línea con el **precio congelado**
+en el momento de la compra. Ese último detalle lo deja claro: si el vendedor sube el precio
+mañana, tu pedido de ayer no cambia. En Catálogo el precio es un dato vivo; en Pedidos, histórico.
+
+Forzar un modelo canónico produce una clase con treinta campos donde cada uno solo importa a una
+parte, y `null` por todos lados.
+
+Y la razón de peso para alta escala: **los contextos son la unidad de consistencia**. Dentro,
+transacción ACID; entre ellos, consistencia eventual y compensaciones. Esa línea decide dónde cabe
+un `@Transactional` y dónde harán falta outbox y saga. Son las costuras por las que el sistema se
+parte cuando crece.
+
+### 6.2 · Separas Inventario del Catálogo. ¿El catálogo sigue mostrando el stock?
+
+Sí, y con una copia que puede ir atrasada. La alternativa purista —preguntar a Inventario— tiene
+un problema serio: un listado de 20 publicaciones haría 20 consultas al otro contexto. Es el N+1
+del módulo 3 **cruzando una frontera** que mañana puede ser una llamada de red. Es el error
+clásico al descomponer un monolito: dibujar bien la frontera y luego atravesarla mil veces por
+petición.
+
+La regla:
+
+> **Puedes leer una copia atrasada para mostrar, nunca para decidir.**
+
+Enseñar «quedan 3» con datos de hace dos segundos es aceptable —para cuando lleguen a la pantalla
+del comprador ya estarán viejos aunque los leas de la fuente primaria—. Vender basándote en ellos,
+no. La reserva siempre va contra Inventario.
+
+Lo que sincroniza la copia con la verdad es un evento, y eso ya es el patrón outbox.
+
+### 6.3 · ¿Qué se comparte entre bounded contexts?
+
+**Identificadores sí, modelos no.** `StockItem` importa `ListingId` porque es el punto de
+encuentro entre los contextos, y darle a Inventario un id propio obligaría a mantener una tabla de
+correspondencias sin ganar nada. Pero en Inventario no entra `Listing`, ni `Money`, ni el estado
+de publicación.
+
+**La frontera protege los conceptos, no los números.**
+
+Un detalle que suele sorprender: tampoco pusimos clave foránea entre `stock_item` y `listing`.
+Daría integridad referencial gratis, pero acopla los contextos a nivel de esquema y el día que
+Inventario tenga su propia base de datos no podría existir. Renunciar a ella obliga a tratar la
+ausencia de existencias como un caso de negocio en vez de como un error de integridad, que es lo
+correcto.
+
+### 6.4 · ¿Por qué el inventario necesita dos contadores y no solo «unidades disponibles»?
+
+Porque **comprar no es instantáneo**. El comprador tarda minutos en pagar, y hay que decidir
+cuándo se descuenta:
+
+```
+descontar al pagar    →  se queda sin stock DESPUÉS de haber pagado
+descontar al empezar  →  un carrito abandonado bloquea inventario para siempre
+```
+
+Ninguna es aceptable. Con `onHand` (lo que existe) y `reserved` (lo apartado), más una caducidad,
+no ocurre ninguna de las dos: `available = onHand - reserved`.
+
+El detalle contraintuitivo que demuestra que entiendes el modelo: **confirmar el pago no cambia lo
+disponible.** Ya se descontó al reservar; confirmar solo baja los dos contadores y hace definitivo
+lo apartado. Si `available` bajara al confirmar, estarías descontando dos veces.
+
+### 6.5 · Flash sale: 200 compradores, 1 unidad. ¿Optimista, pesimista o atómico?
+
+Lo medimos, y el resultado tiene dos partes.
+
+**Ninguna de las tres sobrevende.** Correctas las tres. Lo que cambia es el coste de rechazar a
+los otros 199:
+
+```
+optimista   199 transacciones que hacen el trabajo entero y lo tiran
+pesimista   199 esperando en cola, cada una reteniendo una conexión
+atómico     199 UPDATE que afectan a 0 filas y terminan
+```
+
+**Y con 50 unidades se rompe el empate:** atómico y pesimista vendieron las 50; el optimista, 13.
+**Perdió 37 ventas con mercancía en el almacén.**
+
+La causa es lo que hay que saber explicar: dos compradores que reservan unidades *distintas*
+escriben igualmente **la misma fila**, así que chocan por la versión. **El conflicto es de fila, no
+de negocio.** La contención no la crea la escasez, la crea compartir un contador.
+
+Peor aún: en el test de carritos abandonados, el optimista dejó **4 unidades apartadas para
+siempre** —el `release` chocó y la reserva se quedó hecha—. Fuga silenciosa de inventario.
+
+La respuesta es el UPDATE atómico condicional:
+
+```sql
+UPDATE stock_item SET reserved = reserved + ?
+ WHERE listing_id = ? AND (on_hand - reserved) >= ?
+```
+
+Sin leer antes, sin lock entre sentencias. Si afecta a 0 filas, no había stock.
+
+Y el remate honesto: **tiene un precio.** La regla queda escrita dos veces, en Java y en SQL, y
+nada garantiza que sigan de acuerdo dentro de un año. Se paga con un test que ejecute la misma
+batería contra las tres implementaciones.
+
+### 6.6 · ¿Por qué poner un CHECK en la tabla si el dominio ya valida lo mismo?
+
+Porque **la base de datos es el único punto por el que pasan de verdad todas las escrituras**.
+
+```sql
+CONSTRAINT stock_item_reserved_within_on_hand CHECK (reserved <= on_hand)
+```
+
+El constructor de `StockItem` valida lo mismo, pero solo protege al código que pasa por él. El
+CHECK protege también del script de migración de datos, del `UPDATE` a mano desde una consola de
+soporte a las tres de la mañana, y de una condición de carrera que se cuele por una ruta que nadie
+previó.
+
+Si eso ocurre, la petición muere con un error de restricción. **Un 500 es mucho mejor resultado
+que una venta imposible de servir.**
+
+No es duplicación por descuido: es defensa en profundidad, y el criterio para decidir qué merece
+estar en los dos sitios es si su violación es catastrófica o solo molesta.
+
+### 6.7 · Tienes tres réplicas ejecutando un proceso que libera reservas caducadas. ¿Cómo evitas liberar dos veces?
+
+Sin candados distribuidos: **con el diseño del estado**.
+
+```java
+if (status != ReservationStatus.HELD) {
+    throw new IllegalStateException("cannot release a reservation in status " + status);
+}
+```
+
+Solo se sale de `HELD`, y solo una vez. Si dos barridos cogen la misma reserva, el segundo
+encuentra `RELEASED` y no devuelve las unidades otra vez. La operación es **segura de repetir
+porque el estado no deja repetirla**.
+
+Es preferible a un lock distribuido —Redis, `SELECT FOR UPDATE` sobre una fila de coordinación—
+porque no añade un componente que pueda fallar ni un punto de contención, y porque sigue siendo
+correcta si el proceso se ejecuta dos veces por accidente, si alguien lo lanza a mano o si un
+mensaje llega duplicado. **Idempotencia por diseño del estado en lugar de por coordinación** es el
+mismo principio que sostiene un consumidor de Kafka frente a entregas repetidas.
+
+Dos detalles de implementación que también se valoran: procesar **en lotes acotados**, porque cien
+mil reservas vencidas en una transacción bloquearían filas y castigarían al resto; y recibir el
+instante **como parámetro** en vez de leer `Instant.now()` dentro, para poder probar la caducidad
+sin esperar de verdad.
+
+### 6.8 · Reservas de citas: ¿cómo impides que dos personas cojan la misma hora?
+
+Es un problema **distinto** del stock: el recurso escaso no es una cantidad sino un intervalo, y
+lo que hay que impedir es el **solapamiento**. No sirve el UPDATE atómico, porque no hay una fila
+que actualizar: hay que insertar comprobando algo sobre las que ya existen.
+
+Hacerlo en Java es la sobreventa otra vez —consultar si está libre e insertar deja la ventana de
+siempre—. La respuesta está en PostgreSQL:
+
+```sql
+CREATE EXTENSION btree_gist;
+
+CONSTRAINT booking_no_overlap
+    EXCLUDE USING gist (listing_id WITH =, slot WITH &&)
+```
+
+«No pueden existir dos filas con el mismo `listing_id` cuyos intervalos se solapen». La
+comprobación ocurre dentro de la inserción, con la misma garantía que una clave única. Medido con
+100 compradores simultáneos por la misma hora: **1 reserva, 99 rechazos**, sin bloquear nada.
+
+Lo que lo hace superior a cualquier solución en código es el **alcance**: se mantiene aunque el
+Java esté mal escrito, aunque alguien inserte a mano desde `psql` y aunque haya veinte instancias
+desplegadas.
+
+Tres detalles que demuestran haberlo usado de verdad:
+
+- **`btree_gist`** hace falta porque GiST no sabe indexar la igualdad de escalares como UUID.
+- **`tstzrange(inicio, fin, '[)')`** — abierto por la derecha, o dos citas consecutivas
+  (10:00–11:00 y 11:00–12:00) se considerarían solapadas y nadie podría encadenarlas.
+- **`getConstraintName()` llega null** en las violaciones de restricciones de exclusión, así que
+  para traducir el error a un concepto de negocio hay que mirar también el mensaje.

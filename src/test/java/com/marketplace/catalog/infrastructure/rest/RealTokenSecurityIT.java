@@ -76,12 +76,20 @@ class RealTokenSecurityIT {
     void tamperedSignatureIsRejected() {
         var valido = keycloak.getAccessToken("vendedora");
 
-        // Se altera el último carácter de la firma dejando intacto el payload. El token sigue
-        // teniendo la forma correcta y unos claims perfectamente legítimos: lo único que falla
-        // es la criptografía. Es exactamente lo que intentaría alguien que se fabricase un token
-        // con el rol que le apetezca.
-        var manipulado = valido.substring(0, valido.length() - 1)
-                + (valido.endsWith("A") ? "B" : "A");
+        // Se altera un carácter EN MEDIO de la firma, dejando intacto el payload. El token sigue
+        // teniendo la forma correcta y unos claims perfectamente legítimos: lo único que falla es
+        // la criptografía. Es lo que intentaría quien se fabricase un token con el rol que le
+        // apetezca.
+        //
+        // Tiene que ser en medio, y esto costó un test intermitente: en base64 los caracteres
+        // finales codifican bits de relleno que se descartan al decodificar, así que cambiar el
+        // último a veces produce EXACTAMENTE la misma firma binaria y el token sigue siendo
+        // válido. El test pasaba o fallaba según qué token tocara.
+        var partes = valido.split("\\.");
+        var firma = new StringBuilder(partes[2]);
+        int medio = firma.length() / 2;
+        firma.setCharAt(medio, firma.charAt(medio) == 'A' ? 'B' : 'A');
+        var manipulado = partes[0] + "." + partes[1] + "." + firma;
 
         given()
                 .auth().oauth2(manipulado)

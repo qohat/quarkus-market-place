@@ -31,6 +31,16 @@ public class DatabaseCleaner {
 
     @Transactional
     public void clear() {
+        // Sin clave foránea entre contextos (ver V3__create_stock_item_table.sql), el orden de
+        // borrado da igual. Es un efecto secundario agradable de mantener la frontera limpia.
+        //
+        // OJO AL OLVIDO CLÁSICO: al añadir una tabla nueva hay que acordarse de esta lista. Las
+        // reservas huérfanas de un test anterior hicieron fallar el barrido de caducadas con un
+        // StockItemNotFoundException desconcertante, porque apuntaban a existencias ya borradas.
+        // Un cleaner incompleto no falla donde se olvidó, sino en el siguiente test que corra.
+        entityManager.createNativeQuery("delete from booking").executeUpdate();
+        entityManager.createQuery("delete from ReservationEntity").executeUpdate();
+        entityManager.createQuery("delete from StockItemEntity").executeUpdate();
         entityManager.createQuery("delete from ListingEntity").executeUpdate();
     }
 }

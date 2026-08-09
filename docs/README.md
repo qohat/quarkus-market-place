@@ -33,8 +33,8 @@ usando Java 25 y Quarkus 3.38, hasta llegar a sistemas distribuidos a escala.
 | 3 | Persistencia | ✅ | [03-persistencia.md](03-persistencia.md) |
 | 4 | Concurrencia: bloqueante vs reactivo vs virtual threads | ✅ | [04-concurrencia.md](04-concurrencia.md) |
 | 5 | Seguridad | ✅ | [05-seguridad.md](05-seguridad.md) |
-| 6 | Bounded contexts e inventario | 🔄 siguiente | — |
-| 7 | Mensajería: Kafka, outbox y saga | ⏳ | — |
+| 6 | Bounded contexts e inventario | ✅ | [06-bounded-contexts-e-inventario.md](06-bounded-contexts-e-inventario.md) |
+| 7 | Mensajería: Kafka, outbox y saga | 🔄 siguiente | — |
 | 8 | Resiliencia y observabilidad | ⏳ | — |
 | 9 | Escala y producción | ⏳ | — |
 
@@ -61,8 +61,10 @@ los hilos. Todo reproducible con `./scripts/bench.sh`.
 vendedor/comprador y **autorización a nivel de recurso**: el fallo BOLA, número 1 del OWASP API
 Security Top 10, que ninguna anotación resuelve. Con tests en tres capas.
 
-**6 · Bounded contexts** — Separar catálogo, inventario, órdenes y pagos. Reserva de stock sin
-sobreventa y reserva de franjas horarias: dos problemas de concurrencia distintos.
+**6 · Bounded contexts** — Separar catálogo e inventario en un monolito modular. Las tres
+estrategias contra la sobreventa **medidas** con 200 compradores simultáneos, reservas con
+caducidad idempotentes, y solapamiento de franjas resuelto con `EXCLUDE USING gist`: dos problemas
+de concurrencia distintos, dos respuestas distintas.
 
 **7 · Mensajería** — SmallRye Reactive Messaging, Kafka, patrón **outbox** transaccional, **saga**
 de pago con compensaciones, idempotencia frente a mensajes duplicados.

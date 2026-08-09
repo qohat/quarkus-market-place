@@ -7,6 +7,7 @@ import com.marketplace.support.DatabaseCleaner;
 import com.marketplace.support.TransactionalRunner;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.TestInstance;
@@ -104,6 +105,22 @@ class StockConcurrencyTest {
     void setUp() {
         database.clear();
     }
+
+    /*
+     * Limpiar también AL TERMINAR, no solo antes.
+     *
+     * Estos tests necesitan transacciones reales, así que no pueden usar @TestTransaction ni
+     * apoyarse en su rollback: lo que escriben, queda. Los tests más antiguos —los que cuentan
+     * filas con @TestTransaction— asumen una base vacía, así que estos residuos los hacían
+     * fallar a distancia, en otra clase y por un motivo que no aparecía por ningún lado.
+     *
+     * Regla general: quien no puede deshacer lo que escribe, recoge al salir.
+     */
+    @AfterEach
+    void tearDown() {
+        database.clear();
+    }
+
 
     @ParameterizedTest(name = "{0}")
     @MethodSource("estrategias")

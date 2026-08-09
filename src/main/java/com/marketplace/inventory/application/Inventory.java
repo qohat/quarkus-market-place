@@ -7,6 +7,8 @@ import com.marketplace.inventory.domain.ReservationId;
 import com.marketplace.inventory.domain.ReservationRepository;
 import com.marketplace.inventory.domain.StockItem;
 import com.marketplace.inventory.domain.StockRepository;
+import com.marketplace.inventory.domain.event.StockChanged;
+import com.marketplace.shared.outbox.Outbox;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.transaction.Transactional;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
@@ -47,6 +49,7 @@ public class Inventory {
 
     private final StockRepository stock;
     private final ReservationRepository reservations;
+    private final Outbox outbox;
 
     /**
      * Cuánto vive una reserva sin pagar.
@@ -58,14 +61,17 @@ public class Inventory {
     @ConfigProperty(name = "marketplace.inventory.reservation-ttl", defaultValue = "PT15M")
     Duration reservationTtl;
 
-    Inventory(StockRepository stock, ReservationRepository reservations) {
+    Inventory(StockRepository stock, ReservationRepository reservations, Outbox outbox) {
         this.stock = stock;
         this.reservations = reservations;
+        this.outbox = outbox;
     }
 
     /** Da de alta las existencias iniciales de un producto. */
     public void track(ListingId listingId, int units) {
-        stock.create(StockItem.of(listingId, units));
+        var item = StockItem.of(listingId, units);
+        stock.create(item);
+        outbox.publish(StockChanged.from(item));
     }
 
     public Optional<StockItem> stockOf(ListingId listingId) {
@@ -85,9 +91,12 @@ public class Inventory {
      * nadie ha descontado.
      */
     public Reservation reserve(ListingId listingId, BuyerId buyerId, int units) {
-        stock.reserve(listingId, units);
+        var updated = stock.reserve(listingId, units);
         var reservation = Reservation.hold(listingId, buyerId, units, reservationTtl, Instant.now());
         reservations.save(reservation);
+        // El evento se anota en la MISMA transacción que el cambio: o se guardan los dos, o
+        // ninguno. Aquí no se habla con Kafka; de eso se encarga el relay, después.
+        outbox.publish(StockChanged.from(updated));
         return reservation;
     }
 
@@ -95,7 +104,7 @@ public class Inventory {
     public Reservation confirm(ReservationId reservationId) {
         var reservation = load(reservationId).confirm();
         reservations.update(reservation);
-        stock.confirm(reservation.listingId(), reservation.units());
+        outbox.publish(StockChanged.from(stock.confirm(reservation.listingId(), reservation.units())));
         return reservation;
     }
 
@@ -103,7 +112,7 @@ public class Inventory {
     public Reservation cancel(ReservationId reservationId) {
         var reservation = load(reservationId).release();
         reservations.update(reservation);
-        stock.release(reservation.listingId(), reservation.units());
+        outbox.publish(StockChanged.from(stock.release(reservation.listingId(), reservation.units())));
         return reservation;
     }
 
@@ -129,7 +138,8 @@ public class Inventory {
             try {
                 var released = vencida.release();
                 reservations.update(released);
-                stock.release(released.listingId(), released.units());
+                outbox.publish(StockChanged.from(
+                        stock.release(released.listingId(), released.units())));
                 liberadas++;
             } catch (IllegalStateException yaLiberada) {
                 // Otra instancia se adelantó. No es un error: es el resultado esperado.

@@ -34,8 +34,8 @@ usando Java 25 y Quarkus 3.38, hasta llegar a sistemas distribuidos a escala.
 | 4 | Concurrencia: bloqueante vs reactivo vs virtual threads | ✅ | [04-concurrencia.md](04-concurrencia.md) |
 | 5 | Seguridad | ✅ | [05-seguridad.md](05-seguridad.md) |
 | 6 | Bounded contexts e inventario | ✅ | [06-bounded-contexts-e-inventario.md](06-bounded-contexts-e-inventario.md) |
-| 7 | Mensajería: Kafka, outbox y saga | 🔄 siguiente | — |
-| 8 | Resiliencia y observabilidad | ⏳ | — |
+| 7 | Mensajería: Kafka, outbox y saga | ✅ | [07-mensajeria-outbox-y-saga.md](07-mensajeria-outbox-y-saga.md) |
+| 8 | Resiliencia y observabilidad | 🔄 siguiente | — |
 | 9 | Escala y producción | ⏳ | — |
 
 ### Qué se cubre en cada uno
@@ -66,8 +66,10 @@ estrategias contra la sobreventa **medidas** con 200 compradores simultáneos, r
 caducidad idempotentes, y solapamiento de franjas resuelto con `EXCLUDE USING gist`: dos problemas
 de concurrencia distintos, dos respuestas distintas.
 
-**7 · Mensajería** — SmallRye Reactive Messaging, Kafka, patrón **outbox** transaccional, **saga**
-de pago con compensaciones, idempotencia frente a mensajes duplicados.
+**7 · Mensajería** — El problema de la escritura dual y el patrón **outbox** que lo resuelve.
+Kafka con SmallRye Reactive Messaging, `SKIP LOCKED` para repartir el relay entre réplicas, y una
+**saga** de compra con compensaciones. Por qué «exactly-once» no existe y las tres formas de hacer
+idempotente a un consumidor.
 
 **8 · Resiliencia y observabilidad** — Circuit breaker, retry, bulkhead, timeout. OpenTelemetry,
 tracing distribuido, Micrometer, health checks.

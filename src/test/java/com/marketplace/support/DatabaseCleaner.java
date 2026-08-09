@@ -39,6 +39,7 @@ public class DatabaseCleaner {
         // StockItemNotFoundException desconcertante, porque apuntaban a existencias ya borradas.
         // Un cleaner incompleto no falla donde se olvidó, sino en el siguiente test que corra.
         entityManager.createNativeQuery("delete from booking").executeUpdate();
+        entityManager.createNativeQuery("delete from outbox_event").executeUpdate();
         entityManager.createQuery("delete from ReservationEntity").executeUpdate();
         entityManager.createQuery("delete from StockItemEntity").executeUpdate();
         entityManager.createQuery("delete from ListingEntity").executeUpdate();

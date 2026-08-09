@@ -33,6 +33,11 @@ dependencies {
     // porque Hibernate ORM es bloqueante de raíz, así que el modelo reactivo no puede
     // reutilizar la capa de persistencia que ya tenemos: hay que bajar a SQL.
     implementation 'io.quarkus:quarkus-reactive-pg-client'
+    // Mensajería (módulo 7). SmallRye Reactive Messaging con conector de Kafka: los canales se
+    // declaran con @Incoming/@Outgoing y se cablean en build time, igual que el resto de Quarkus.
+    implementation 'io.quarkus:quarkus-messaging-kafka'
+    // El relay del outbox y el barrido de reservas caducadas necesitan ejecución periódica.
+    implementation 'io.quarkus:quarkus-scheduler'
     // Seguridad (módulo 5). OIDC en modo `service`: la API valida el JWT que le llega en la
     // cabecera Authorization y no mantiene sesión. La validación es local, contra la clave
     // pública del emisor, sin una llamada de red por petición.
@@ -47,6 +52,10 @@ dependencies {
     // que es justo lo que @TestSecurity se salta por diseño.
     testImplementation 'io.quarkus:quarkus-test-keycloak-server'
     testImplementation 'io.rest-assured:rest-assured'
+    // Espera activa con tiempo límite. Hace falta en el único punto donde la asincronía es
+    // real —la vuelta por Kafka—: un Thread.sleep sería lento cuando funciona y engañoso
+    // cuando falla.
+    testImplementation 'org.awaitility:awaitility'
 }
 
 group = 'org.acme'

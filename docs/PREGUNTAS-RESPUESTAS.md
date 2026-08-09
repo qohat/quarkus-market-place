@@ -1068,3 +1068,178 @@ Tres detalles que demuestran haberlo usado de verdad:
   (10:00–11:00 y 11:00–12:00) se considerarían solapadas y nadie podría encadenarlas.
 - **`getConstraintName()` llega null** en las violaciones de restricciones de exclusión, así que
   para traducir el error a un concepto de negocio hay que mirar también el mensaje.
+
+---
+
+# Módulo 7 — Mensajería, outbox y saga
+
+### 7.1 · Confirmas una venta en la base de datos y publicas un evento en Kafka. ¿Qué puede salir mal?
+
+Las dos cosas posibles, y no hay forma de evitarlo dentro de ese método:
+
+```
+la BD confirma y Kafka falla   →  evento perdido, el resto del sistema nunca se entera
+Kafka publica y la BD revierte →  evento fantasma de algo que no ocurrió
+```
+
+**`@Transactional` solo cubre la base de datos.** Kafka no participa en esa transacción.
+
+Y hay que saber descartar la respuesta fácil: **sí existe** el compromiso en dos fases (2PC/XA),
+que las haría atómicas, y **no se usa** con Kafka. Es lento, exige que todos los participantes lo
+soporten, y si el coordinador cae en el momento equivocado deja recursos bloqueados hasta que
+alguien intervenga a mano.
+
+La solución es el **patrón outbox**: si no puedes hacer atómicas dos escrituras a sistemas
+distintos, haz que sean dos escrituras al mismo sistema. El evento se guarda como una fila más, en
+la misma transacción que el cambio de negocio, y un proceso aparte lo lleva después a Kafka.
+
+### 7.2 · ¿Existe exactly-once?
+
+**De extremo a extremo, no.** Y saber decirlo es lo que se está preguntando.
+
+Kafka tiene una función que se llama así y es real, pero cubre **Kafka-a-Kafka**: leer de un tema,
+procesar y escribir en otro, de forma transaccional dentro de su propio mundo. En cuanto interviene
+tu base de datos, una pasarela de pago o un correo electrónico, la garantía se acaba.
+
+Lo que hay de verdad:
+
+| Garantía | Qué significa |
+|---|---|
+| at-most-once | Puede perderse. Nunca duplica |
+| at-least-once | Nunca se pierde. Puede duplicar |
+| exactly-once | No existe fuera de un sistema cerrado |
+
+El relay del outbox lo ilustra: lee, publica, marca. Si muere entre publicar y marcar, reenvía.
+Invertir los pasos cambia duplicar por perder. **No hay tercera opción.**
+
+Lo que sí se consigue es:
+
+```
+at-least-once  +  consumidor idempotente  =  effectively once
+```
+
+Y ahí es donde va el esfuerzo: no en perseguir una garantía imposible, sino en hacer que un
+duplicado no importe.
+
+### 7.3 · ¿Cómo haces idempotente a un consumidor?
+
+Tres formas, de más barata a más cara, y lo que se valora es elegir la más barata que sirva.
+
+**1 · Por la forma del mensaje.** Que el evento lleve el **estado resultante** y no el cambio:
+
+```java
+record StockChanged(String listingId, int onHand, int reserved, int available)   // ✓
+record StockReserved(String listingId, int units)                                // ✗
+```
+
+«Quedan 7 disponibles» aplicado dos veces deja 7. «Se reservaron 3» aplicado dos veces descuenta
+seis. **No hace falta recordar nada**, y por eso es la primera opción a considerar.
+
+**2 · Por diseño del estado.** Que la operación solo sea posible una vez:
+
+```java
+if (status != HELD) throw new IllegalStateException(...);
+```
+
+**3 · Por registro de mensajes vistos.** Una tabla *inbox* con los ids procesados, consultada antes
+de actuar. Es la más general y la única que sirve cuando el efecto es irreversible —enviar un
+correo, cobrar—, pero añade una escritura por mensaje y hay que purgarla.
+
+### 7.4 · ¿Por qué la clave de partición es tan importante?
+
+Porque **Kafka solo garantiza el orden dentro de una partición**, nunca entre particiones.
+
+Si los eventos de una misma publicación se reparten entre particiones distintas, el consumidor
+puede procesarlos en cualquier orden: aplicar «stock = 7» después de «stock = 9» deja el catálogo
+mintiendo, y **de forma permanente**, porque no llegará ningún evento nuevo que lo corrija.
+
+Usando el id del agregado como clave, todos sus eventos caen siempre en la misma partición y
+llegan en orden. El coste es que un agregado muy activo —una publicación en oferta— concentra
+carga en una partición: es el clásico problema de la *hot partition*, y se acepta porque el orden
+importa más.
+
+Corolario: **el paralelismo máximo de un consumer group es el número de particiones.** Añadir
+instancias por encima de esa cifra no aporta nada; se quedan sin trabajo.
+
+### 7.5 · Tres réplicas de tu aplicación sondean la tabla outbox. ¿Cómo evitas publicar por triplicado?
+
+```sql
+select * from outbox_event where published_at is null
+ order by occurred_at limit 100
+   for update skip locked
+```
+
+**`SKIP LOCKED`** es la pieza. Un `FOR UPDATE` normal —el bloqueo pesimista del módulo 6— haría que
+las otras dos **esperasen**, convirtiendo tres relays en uno con dos mirando. `SKIP LOCKED` dice
+«no esperes, sáltate lo que otro tiene cogido y llévate lo siguiente»: las tres réplicas se
+reparten el trabajo solas, sin coordinador, sin duplicar y sin un solo lock distribuido.
+
+Dos detalles que demuestran haberlo usado:
+
+- Requiere **consulta nativa**: JPA no sabe expresarlo, `LockModeType.PESSIMISTIC_WRITE` genera
+  `FOR UPDATE` y ahí acaba su vocabulario.
+- Es el mecanismo con el que se construye **una cola de trabajo sobre una tabla**. Para muchos
+  sistemas eso basta y no hace falta Kafka en absoluto — decirlo en una entrevista de arquitectura
+  vale más que enumerar tecnologías.
+
+### 7.6 · Saga: ¿coreografía u orquestación?
+
+**Orquestación**, salvo motivo concreto, y el argumento es la depuración.
+
+Con orquestación el flujo se lee de arriba abajo en una clase: reservar, cobrar, confirmar, y qué
+compensar si algo falla. Con coreografía —cada contexto reaccionando a los eventos de los demás—
+**el flujo no está escrito en ningún sitio**: para saber qué ocurre hay que reconstruirlo leyendo a
+qué evento responde cada consumidor, y los ciclos de eventos son fáciles de crear sin querer.
+
+El precio de la orquestación es que el coordinador conoce varios contextos. Es acoplamiento
+consciente y **localizado en un punto**, que suele ser mejor negocio que un flujo repartido por
+seis clases que nadie puede seguir.
+
+La coreografía gana cuando los pasos son de verdad independientes y no hay que decidir nada: enviar
+un correo, actualizar una analítica, invalidar una caché.
+
+Y lo esencial de una saga en cualquiera de los dos estilos: **compensa, no revierte**. No se puede
+«des-cobrar» una tarjeta; se emite un reembolso, que es un hecho nuevo. Una saga es
+*eventualmente* coherente, no atómica: hay instantes en los que el sistema está a medias y el
+diseño tiene que soportarlo.
+
+### 7.7 · En una saga que reserva stock y luego cobra, ¿qué NO debe hacerse?
+
+**Mantener una transacción abierta durante el cobro.** Es el error que tumba aplicaciones enteras.
+
+Una llamada a una pasarela tarda cientos de milisegundos o segundos. Si la transacción sigue
+abierta, retiene una conexión del pool todo ese tiempo: con 20 conexiones, **20 compras simultáneas
+dejan la aplicación sin poder atender nada más**, incluidas peticiones que no tenían nada que ver.
+Es el bug número 8 del módulo 4.
+
+Cada paso de la saga abre y cierra su propia transacción.
+
+Otros dos que se valoran:
+
+- **El orden**: reservar antes de cobrar. Al revés habría que reembolsar cuando no haya stock, y un
+  reembolso siempre es peor experiencia que un «no hay unidades».
+- **La clave de idempotencia del cobro debe ser estable** — el id de la reserva, no un UUID nuevo
+  por intento. Si la red se cae después de que el cargo se procese pero antes de recibir la
+  respuesta, el reintento con la misma clave devuelve el cargo original en lugar de cobrar dos
+  veces.
+
+Y hay que tener respuesta para «¿y si la compensación falla?». En nuestro caso no es catastrófico
+porque **la reserva caduca sola** y el barrido la devuelve: siempre conviene una red debajo de la
+compensación, porque la compensación también es código que puede fallar.
+
+### 7.8 · Escribes un consumidor de Kafka que actualiza la base de datos. ¿Qué se te olvida?
+
+**`@Blocking`.**
+
+Los consumidores de SmallRye Reactive Messaging se ejecutan sobre un **event loop de Vert.x**, y
+una llamada JDBC bloquea. Sin esa anotación es el bug número 1 del módulo 4 en su forma más pura:
+un consumidor de Kafka parando los event loops de toda la aplicación, incluidas las peticiones HTTP
+que no tienen nada que ver con la mensajería.
+
+Es de los sitios donde más se cuela, porque **un consumidor no “parece” un endpoint** y nadie se
+pregunta en qué hilo corre.
+
+Lo segundo que se olvida es el **`group.id`**: todas las instancias con el mismo se reparten las
+particiones, así que cada mensaje lo procesa una sola. Con `group.id` distintos, todas reciben
+todos los mensajes — multiplicas el trabajo por el número de réplicas en vez de repartirlo. No se
+nota hasta que hay más de una instancia desplegada.

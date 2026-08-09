@@ -38,6 +38,20 @@ dependencies {
     implementation 'io.quarkus:quarkus-messaging-kafka'
     // El relay del outbox y el barrido de reservas caducadas necesitan ejecución periódica.
     implementation 'io.quarkus:quarkus-scheduler'
+    // Resiliencia (módulo 8). MicroProfile Fault Tolerance: @Timeout, @Retry, @CircuitBreaker
+    // y @Fallback como interceptores generados en build time.
+    implementation 'io.quarkus:quarkus-smallrye-fault-tolerance'
+    // Trazas distribuidas. El contexto viaja por cabeceras HTTP y, lo que aquí más importa,
+    // también por las cabeceras de los mensajes de Kafka: la traza sobrevive al salto asíncrono.
+    implementation 'io.quarkus:quarkus-opentelemetry'
+    // Health checks en /q/health/live y /q/health/ready. No lo arrastra ninguna otra
+    // extensión: hay que declararlo, y sin él esos endpoints simplemente no existen.
+    implementation 'io.quarkus:quarkus-smallrye-health'
+    // Métricas en formato Prometheus, servidas en /q/metrics.
+    implementation 'io.quarkus:quarkus-micrometer-registry-prometheus'
+    // Dev Services de observabilidad: levanta Grafana + Loki + Tempo + Prometheus en un
+    // contenedor, igual que hizo con PostgreSQL, Keycloak y Kafka.
+    implementation 'io.quarkus:quarkus-observability-devservices-lgtm'
     // Seguridad (módulo 5). OIDC en modo `service`: la API valida el JWT que le llega en la
     // cabecera Authorization y no mantiene sesión. La validación es local, contra la clave
     // pública del emisor, sin una llamada de red por petición.
@@ -56,6 +70,10 @@ dependencies {
     // real —la vuelta por Kafka—: un Thread.sleep sería lento cuando funciona y engañoso
     // cuando falla.
     testImplementation 'org.awaitility:awaitility'
+    // Cliente Kafka para los tests: permite publicar mensajes a mano y leer de un tema
+    // directamente, que es la única forma de comprobar que la cola de mensajes muertos recibe
+    // lo que debe.
+    testImplementation 'io.quarkus:quarkus-test-kafka-companion'
 }
 
 group = 'org.acme'

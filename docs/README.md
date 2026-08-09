@@ -35,8 +35,8 @@ usando Java 25 y Quarkus 3.38, hasta llegar a sistemas distribuidos a escala.
 | 5 | Seguridad | ✅ | [05-seguridad.md](05-seguridad.md) |
 | 6 | Bounded contexts e inventario | ✅ | [06-bounded-contexts-e-inventario.md](06-bounded-contexts-e-inventario.md) |
 | 7 | Mensajería: Kafka, outbox y saga | ✅ | [07-mensajeria-outbox-y-saga.md](07-mensajeria-outbox-y-saga.md) |
-| 8 | Resiliencia y observabilidad | 🔄 siguiente | — |
-| 9 | Escala y producción | ⏳ | — |
+| 8 | Resiliencia y observabilidad | ✅ | [08-resiliencia-y-observabilidad.md](08-resiliencia-y-observabilidad.md) |
+| 9 | Escala y producción | 🔄 siguiente | — |
 
 ### Qué se cubre en cada uno
 
@@ -71,8 +71,10 @@ Kafka con SmallRye Reactive Messaging, `SKIP LOCKED` para repartir el relay entr
 **saga** de compra con compensaciones. Por qué «exactly-once» no existe y las tres formas de hacer
 idempotente a un consumidor.
 
-**8 · Resiliencia y observabilidad** — Circuit breaker, retry, bulkhead, timeout. OpenTelemetry,
-tracing distribuido, Micrometer, health checks.
+**8 · Resiliencia y observabilidad** — Timeout, retry con jitter y circuit breaker **provocando
+los fallos y midiendo los intentos reales**, no solo anotando. Cola de mensajes muertos contra el
+mensaje envenenado. OpenTelemetry con la traza sobreviviendo al salto por Kafka, métricas de
+cardinalidad acotada y la diferencia entre liveness y readiness.
 
 **9 · Escala y producción** — Caché, rate limiting, compilación nativa con Mandrel, contenedores,
 Kubernetes, autoescalado y prueba de carga.

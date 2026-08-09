@@ -1243,3 +1243,168 @@ Lo segundo que se olvida es el **`group.id`**: todas las instancias con el mismo
 particiones, así que cada mensaje lo procesa una sola. Con `group.id` distintos, todas reciben
 todos los mensajes — multiplicas el trabajo por el número de réplicas en vez de repartirlo. No se
 nota hasta que hay más de una instancia desplegada.
+
+---
+
+# Módulo 8 — Resiliencia y observabilidad
+
+### 8.1 · Vas a llamar a una API externa. ¿Qué protección pones primero?
+
+**Timeout**, y es la que más se olvida.
+
+> Un servicio lento es peor que uno caído. El caído te falla rápido y sigues; el lento retiene tus
+> hilos y tus conexiones hasta arrastrarte con él.
+
+Sin timeout **ningún otro patrón llega a activarse**: si la llamada nunca vuelve, no hay fallo que
+contar ni reintento que hacer. Y el daño no se queda en esa petición: con 20 conexiones en el pool,
+20 llamadas colgadas dejan la aplicación entera sin poder atender nada, por culpa de un dependiente
+que ni siquiera está caído.
+
+Después: retry con jitter, circuit breaker y, si hace falta, bulkhead.
+
+### 8.2 · ¿Cuándo NO hay que reintentar?
+
+Cuando el fallo es **permanente**. La pregunta que decide es: *¿tiene sentido volver a intentarlo?*
+
+| | Ejemplo | ¿Reintentar? |
+|---|---|---|
+| Transitorio | Timeout, 503, conexión rechazada | Sí |
+| Permanente | Pago rechazado, 400, validación | No |
+
+Reintentar un rechazo de pago no solo es inútil —fallará igual— sino que **gasta cuota en la
+pasarela y puede disparar sus controles antifraude**. Es de los errores que se pagan en dinero.
+
+En MicroProfile eso son dos atributos:
+
+```java
+@Retry(retryOn = PaymentGatewayUnavailableException.class,
+       abortOn = PaymentDeclinedException.class)
+```
+
+Dos detalles que se valoran: **`maxRetries = 3` son 4 llamadas** (una inicial más tres reintentos),
+y **sin `jitter` los reintentos se sincronizan** creando picos que rematan al servicio justo cuando
+intentaba recuperarse — el rebaño atronador.
+
+### 8.3 · ¿A quién protege un circuit breaker?
+
+**A ti, no al servicio caído.** Es la respuesta que se busca, porque casi todo el mundo dice lo
+contrario.
+
+Evita que te caigas esperando a alguien que ya está muerto. Con el circuito abierto, la llamada
+falla en microsegundos en vez de consumir 2 s de timeout más tres reintentos: liberas hilos y
+conexiones para las peticiones que **sí** se pueden atender.
+
+Que de paso el servicio caído reciba menos tráfico y pueda recuperarse es un efecto secundario
+agradable, no el objetivo.
+
+Lo que hay que añadir para demostrar que se ha configurado de verdad: **`skipOn` para los fallos de
+negocio**. Sin él, una racha de compradores sin fondos abre el circuito e **impide cobrar a quien sí
+tiene dinero**. El circuito debe contar fallos de infraestructura, jamás resultados de negocio.
+
+### 8.4 · Tienes `@Retry` y `@CircuitBreaker` en el mismo método. ¿En qué orden se aplican y por qué importa?
+
+MicroProfile los aplica de fuera hacia dentro:
+
+```
+Fallback  >  Retry  >  CircuitBreaker  >  Timeout  >  Bulkhead
+```
+
+**Retry envuelve a CircuitBreaker**, y eso es lo que impide que los dos se peleen: cada reintento
+pasa por el circuito, así que en cuanto abre, los reintentos dejan de llegar al servicio.
+
+Con el orden contrario tendrías el anti-patrón clásico: **el reintento como acelerante del
+incendio**. Con 3 reintentos, 1 000 clientes hacen 3 000 llamadas a algo que se está cayendo.
+
+Y el corolario que casi nadie tiene presente: **Timeout está por dentro de Retry, así que el límite
+es por intento, no total**. Tres intentos de 2 segundos pueden tardar 6, y el cliente espera el
+triple de lo que su autor creía.
+
+Nosotros lo vimos en un test rojo: el de `@Retry` veía 2 intentos en vez de 4 porque el circuito se
+abría a mitad y cortaba los reintentos restantes. Parecía un fallo del retry y era el orden
+funcionando exactamente como debe.
+
+### 8.5 · Un mensaje de Kafka no se puede procesar nunca. ¿Qué pasa?
+
+Con estrategia de reintento, ese mensaje **bloquea su partición para siempre** y nada de lo que
+venga detrás se procesa. Es el **mensaje envenenado**, un modo de fallo que no existe en HTTP: el
+sistema no da errores llamativos, simplemente deja de avanzar para una parte del tráfico.
+
+Las tres estrategias:
+
+| | Qué elige |
+|---|---|
+| `fail` | Parar el consumidor. Seguridad máxima, disponibilidad cero |
+| `ignore` | Seguir y perder el mensaje. Silencioso y peligroso |
+| `dead-letter-queue` | Apartarlo a otro tema y seguir |
+
+La DLQ es la única que no obliga a elegir entre pararlo todo y perder datos: el mensaje queda
+guardado, con la causa en sus cabeceras, para investigarlo y reinyectarlo.
+
+Y el matiz que demuestra experiencia: **no todo lo que falla debe ir a la DLQ**. Hay que distinguir
+«no es para mí» —otro tipo de evento en un tema compartido, que se ignora— de «es mío y está roto».
+Si va todo, la DLQ se llena de mensajes sanos ajenos y **se convierte en ruido que nadie revisa**,
+que es como mueren las colas de muertos en la práctica.
+
+### 8.6 · ¿Qué tiene de malo `Counter.tag("userId", userId)`?
+
+**Hace explotar Prometheus.** Cada valor distinto de una etiqueta crea una **serie temporal nueva**,
+así que un id de usuario significa una serie por persona: memoria, disco y consultas lentas hasta
+que la instancia de monitorización se cae. Y no se nota hasta que ya ha pasado.
+
+La regla:
+
+```
+etiquetas  →  dimensiones ACOTADAS: result, status, endpoint, región
+trazas y logs  →  identificadores: userId, orderId, requestId
+```
+
+Las trazas sí están pensadas para alta cardinalidad; las métricas, no.
+
+Y el otro lado de la moneda es igual de importante: **separar los resultados que significan cosas
+distintas**. Un contador único de «errores» mezcla un pico de rechazos —problema de negocio, una
+pasarela endureciendo reglas, un fraude— con un pico de fallos técnicos, y obliga a ir a los logs
+para saber cuál está pasando.
+
+### 8.7 · ¿Qué diferencia hay entre liveness y readiness, y qué pasa si te equivocas?
+
+```
+liveness   ¿estoy vivo?    Si falla → Kubernetes REINICIA el contenedor
+readiness  ¿puedo servir?  Si falla → lo saca del balanceador, sin reiniciar
+```
+
+**La regla: liveness solo para lo que un reinicio pueda arreglar** —un interbloqueo, una fuga de
+memoria—. Todo lo demás, incluidas las dependencias externas, es readiness.
+
+Equivocarse tiene consecuencias graves y es un error muy común: **poner la base de datos en
+liveness** significa que, el día que se caiga, Kubernetes reinicie **todas** tus instancias a la
+vez. Una incidencia se convierte en una caída total, y encima los reinicios impiden que el servicio
+se recupere solo cuando la base vuelva.
+
+Nuestro caso: un outbox atascado va en readiness. Si fuera liveness, el bucle de reinicios
+**empeoraría** el atasco, porque cada arranque cuesta tiempo durante el cual nadie vacía la cola.
+
+Y un detalle de calidad: **el health check devuelve datos**, no solo un estado — cuántos eventos hay
+pendientes y desde qué umbral preocuparse. Uno que solo diga «mal» obliga a ir a buscar por qué, a
+las tres de la mañana.
+
+### 8.8 · Una compra pasa por HTTP, PostgreSQL, Kafka y un consumidor. ¿Cómo investigas que fue lenta?
+
+Con **trazas distribuidas**, y lo que hace que funcione es que el contexto se propague.
+
+OpenTelemetry pasa un identificador de traza por las cabeceras HTTP (`traceparent`, estándar W3C) y
+—lo que aquí más importa— **también por las cabeceras del mensaje de Kafka**. Así el trabajo del
+consumidor aparece colgando de la petición que lo originó, aunque se ejecute segundos después y en
+otro proceso. Sin eso, la traza terminaría al publicar y el consumidor quedaría huérfano.
+
+La pieza que lo une todo:
+
+```properties
+quarkus.log.console.format=... traceId=%X{traceId} spanId=%X{spanId} ...
+```
+
+Al ver un error en los logs, ese identificador lleva directamente a la traza completa de esa
+petición. **Es lo que convierte tres pilares sueltos en observabilidad de verdad**; sin él,
+correlacionar es buscar por marcas de tiempo.
+
+Y una advertencia de coste: en producción **se muestrea**. Una traza por petición a gran escala
+cuesta más en almacenamiento y ancho de banda que el propio servicio.
